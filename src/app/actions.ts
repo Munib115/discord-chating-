@@ -287,3 +287,37 @@ export async function kickUserFromDen(denId: number, userId: number) {
   revalidatePath(`/d/${den.slug}`);
   revalidatePath("/");
 }
+
+export async function updateUserProfile(formData: {
+  username: string;
+  bio: string;
+}) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const cleanUsername = formData.username.trim();
+  const cleanBio = formData.bio.trim();
+
+  if (!cleanUsername) throw new Error("Username cannot be empty");
+
+  // Check if username is already taken by another user
+  const existing = await prisma.user.findUnique({
+    where: { username: cleanUsername },
+  });
+
+  if (existing && existing.id !== user.id) {
+    throw new Error("Username is already taken");
+  }
+
+  // Update user in database
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      username: cleanUsername,
+      bio: cleanBio,
+    },
+  });
+
+  revalidatePath("/");
+  return updatedUser;
+}

@@ -53,6 +53,7 @@ model Channel {
   id        Int      @id @default(autoincrement())
   name      String
   slug      String
+  type      String   @default("TEXT") // "TEXT" or "VOICE"
   denId     Int
   den       Den      @relation(fields: [denId], references: [id], onDelete: Cascade)
   posts     Post[]

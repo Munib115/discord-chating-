@@ -143,6 +143,9 @@ async function main() {
   const shonenManga = await prisma.channel.create({
     data: { name: "manga-spoilers", slug: "manga-spoilers", denId: shonen.id },
   });
+  const shonenVoice = await prisma.channel.create({
+    data: { name: "Voice Lobby", slug: "voice-lobby", type: "VOICE", denId: shonen.id },
+  });
 
   // Channels inside Slice of Life
   const solGeneral = await prisma.channel.create({
@@ -151,15 +154,24 @@ async function main() {
   const solRecommendations = await prisma.channel.create({
     data: { name: "recommendations", slug: "recommendations", denId: sliceOfLife.id },
   });
+  const solVoice = await prisma.channel.create({
+    data: { name: "cozy-music-room", slug: "cozy-music-room", type: "VOICE", denId: sliceOfLife.id },
+  });
 
   // Channels inside Fantasy
   const fanGeneral = await prisma.channel.create({
     data: { name: "general", slug: "general", denId: fantasy.id },
   });
+  const fanVoice = await prisma.channel.create({
+    data: { name: "magical-meeting", slug: "magical-meeting", type: "VOICE", denId: fantasy.id },
+  });
 
   // Channels inside Gaming
   const gamingGeneral = await prisma.channel.create({
     data: { name: "general", slug: "general", denId: gaming.id },
+  });
+  const gamingVoice = await prisma.channel.create({
+    data: { name: "co-op-party", slug: "co-op-party", type: "VOICE", denId: gaming.id },
   });
 
   console.log("Creating default posts...");
