@@ -59,7 +59,7 @@ export default async function ChannelPage({ params }: PageProps) {
   if (!den) notFound();
 
   // Fetch current Channel
-  const channel = den.channels.find((c) => c.slug === resolvedParams.channelSlug);
+  const channel = den.channels.find((c: any) => c.slug === resolvedParams.channelSlug);
   if (!channel) notFound();
 
   // Verify Den membership permissions
