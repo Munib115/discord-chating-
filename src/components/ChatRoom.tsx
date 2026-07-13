@@ -64,7 +64,9 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
         .eq("channelId", channelId)
         .order("createdAt", { ascending: true });
 
-      if (!error && data) {
+      if (error) {
+        console.error("Error fetching messages:", error);
+      } else if (data) {
         setMessages(data);
       }
     };
