@@ -34,6 +34,7 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,6 +59,7 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
     if (!supabaseUrl || !supabaseAnonKey) return;
 
     const fetchMessages = async () => {
+      setFetchError(null);
       const { data, error } = await supabase
         .from("Message")
         .select("*")
@@ -66,6 +68,7 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
 
       if (error) {
         console.error("Error fetching messages:", error);
+        setFetchError(`${error.message} (${error.code || "unknown"})${error.details ? " - " + error.details : ""}`);
       } else if (data) {
         setMessages(data);
       }
@@ -266,6 +269,20 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
     <div className="flex flex-col h-[calc(100vh-150px)] bg-[#313338] rounded-md overflow-hidden border border-[#232428]">
       {/* Message Stream */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+        {fetchError && (
+          <div className="bg-rose-950/40 border border-rose-500/20 text-rose-300 text-xs p-3.5 rounded-md flex flex-col gap-1.5 select-text">
+            <span className="font-bold flex items-center gap-1.5 text-rose-400">
+              ⚠️ Supabase Connection Warning:
+            </span>
+            <p className="font-mono text-[#b5bac1] leading-relaxed break-words bg-black/30 p-2 rounded">
+              {fetchError}
+            </p>
+            <span className="text-[10px] text-slate-400 mt-1 select-none">
+              Ensure you have run the Message table setup SQL script in your Supabase dashboard editor.
+            </span>
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-[#949ba4] text-xs text-center select-none">
             <span className="text-3xl">💬</span>
