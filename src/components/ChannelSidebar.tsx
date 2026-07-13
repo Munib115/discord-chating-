@@ -59,6 +59,7 @@ export default function ChannelSidebar({
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Voice Chat States
   const [activeVoiceChannel, setActiveVoiceChannel] = useState<string | null>(null);
@@ -350,9 +351,22 @@ export default function ChannelSidebar({
                 <div className="text-[#949ba4] text-[12px] font-bold tracking-wide uppercase px-2 mb-1.5 mt-2 select-none">
                   Direct Messages
                 </div>
+
+                {/* Find or start a conversation search bar */}
+                <div className="px-2 mb-2 select-none">
+                  <input
+                    type="text"
+                    placeholder="Find or start a conversation"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-[#120f14] text-xs text-[#dbdee1] border border-[#232428] rounded px-2 py-1.5 focus:outline-none focus:border-indigo-500 transition font-medium"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-[2px]">
                   {allUsers
                     .filter((u) => u.id !== currentUser.id)
+                    .filter((u) => u.username.toLowerCase().includes(searchQuery.toLowerCase()))
                     .map((u) => {
                       const isActive = currentTab === "dm" && Number(recipientId) === u.id;
                       return (
