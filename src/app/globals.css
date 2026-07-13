@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #313338;
-  --foreground: #dbdee1;
+  --background: #26202b;
+  --foreground: #f2eef5;
 }
 
 body {
@@ -19,27 +19,111 @@ body {
   scrollbar-width: none;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* -------------------------------------------------------------
+   Cozy Warm Dark Plum Theme (Discord custom client style)
+   Overrides compiled Tailwind CSS classes to transform background hues
+   ------------------------------------------------------------- */
+
+/* 1. Server Sidebar (bg-[#1e1f22]) */
+.bg-\[\#1e1f22\], .bg-gray-900 {
+  background-color: #120f14 !important;
 }
 
+/* 2. Channel Sidebar & Cards (bg-[#2b2d31]) */
+.bg-\[\#2b2d31\], .bg-slate-800 {
+  background-color: #1c161d !important;
+}
+
+/* 3. Main Chat & Feed (bg-[#313338]) */
+.bg-\[\#313338\] {
+  background-color: #26202b !important;
+}
+
+/* 4. Footer Switcher Bar (bg-[#232428]) */
+.bg-\[\#232428\] {
+  background-color: #161117 !important;
+}
+
+/* 5. Text Inputs / Message Box (bg-[#383a40]) */
+.bg-\[\#383a40\] {
+  background-color: #2e2634 !important;
+}
+
+/* 6. Active Selections & Hover states (bg-[#35373c]) */
+.bg-\[\#35373c\] {
+  background-color: #3d3143 !important;
+}
+
+.hover\:bg-\[\#35373c\/50\]:hover {
+  background-color: rgba(61, 49, 67, 0.5) !important;
+}
+
+.hover\:bg-\[\#35373c\]:hover {
+  background-color: #3d3143 !important;
+}
+
+/* Darker hover background overrides */
+.hover\:bg-\[\#2e3035\/30\]:hover {
+  background-color: rgba(46, 38, 53, 0.3) !important;
+}
+
+.bg-\[\#2e3035\/30\] {
+  background-color: rgba(46, 38, 53, 0.3) !important;
+}
+
+.bg-\[\#2e3035\] {
+  background-color: #2a222f !important;
+}
+
+/* 7. Primary Brand Accent (Discord Indigo to Brand Purple #6b4f7a) */
+.bg-indigo-600 {
+  background-color: #6b4f7a !important;
+}
+
+.hover\:bg-indigo-700:hover {
+  background-color: #7f5e92 !important;
+}
+
+.text-indigo-400 {
+  color: #d1b8dc !important;
+}
+
+.text-indigo-500 {
+  color: #c4a4d2 !important;
+}
+
+.border-indigo-500 {
+  border-color: #6b4f7a !important;
+}
+
+.focus\:border-indigo-500:focus {
+  border-color: #7f5e92 !important;
+}
+
+/* Scrollbar Track & Thumb overrides */
 ::-webkit-scrollbar-track {
-  background: #2e3035;
+  background: #1c161d !important;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e1f22;
-  border-radius: 4px;
+  background: #120f14 !important;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #111214;
+  background: #26202b !important;
 }
 
-/* Glassmorphic card styling utilities */
+/* Glassmorphic card styling utilities override */
 .glass-card {
-  background: rgba(43, 45, 49, 0.7);
+  background: rgba(28, 22, 29, 0.8) !important;
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.bg-\[\#1e1f22\/50\] {
+  background-color: rgba(18, 15, 20, 0.5) !important;
+}
+
+.bg-\[\#1e1f22\/40\] {
+  background-color: rgba(18, 15, 20, 0.4) !important;
 }
