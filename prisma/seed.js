@@ -11,6 +11,7 @@ async function main() {
   await prisma.comment.deleteMany();
   await prisma.post.deleteMany();
   await prisma.channel.deleteMany();
+  await prisma.denMember.deleteMany();
   await prisma.den.deleteMany();
   await prisma.user.deleteMany();
 
@@ -63,6 +64,8 @@ async function main() {
       description: "Discussion, theories, and fanart for action-packed Shonen anime and manga.",
       banner: "from-indigo-600 to-slate-900",
       icon: "⚔️",
+      ownerId: luffy.id,
+      passcode: "1234",
     },
   });
 
@@ -73,6 +76,8 @@ async function main() {
       description: "Cozy vibes only. Share your favorite comfort anime, romance, and school life series.",
       banner: "from-rose-500 to-slate-900",
       icon: "🌸",
+      ownerId: sailor.id,
+      passcode: "5678",
     },
   });
 
@@ -83,6 +88,8 @@ async function main() {
       description: "Reborn in another world? Discuss magic systems, demon lords, and fantasy worlds here.",
       banner: "from-emerald-600 to-slate-900",
       icon: "🔮",
+      ownerId: goku.id,
+      passcode: "9999",
     },
   });
 
@@ -93,7 +100,36 @@ async function main() {
       description: "For players of Genshin Impact, Honkai Star Rail, anime fighters, and visual novels.",
       banner: "from-purple-600 to-slate-900",
       icon: "🎮",
+      ownerId: deku.id,
+      passcode: "0000",
     },
+  });
+
+  console.log("Seeding Den Memberships...");
+  // Seed Shonen Central memberships (everyone is a member initially)
+  const members = [luffy, zoro, goku, sailor, deku];
+  for (const user of members) {
+    await prisma.denMember.create({
+      data: { denId: shonen.id, userId: user.id },
+    });
+  }
+
+  // Seed Slice of Life memberships
+  await prisma.denMember.create({
+    data: { denId: sliceOfLife.id, userId: sailor.id },
+  });
+  await prisma.denMember.create({
+    data: { denId: sliceOfLife.id, userId: luffy.id },
+  });
+
+  // Seed Fantasy membership
+  await prisma.denMember.create({
+    data: { denId: fantasy.id, userId: goku.id },
+  });
+
+  // Seed Gaming membership
+  await prisma.denMember.create({
+    data: { denId: gaming.id, userId: deku.id },
   });
 
   console.log("Creating default channels...");

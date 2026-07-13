@@ -26,6 +26,7 @@ export default function DenSidebar({ dens }: DenSidebarProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [icon, setIcon] = useState("⚔️");
+  const [passcode, setPasscode] = useState("1234");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -33,10 +34,11 @@ export default function DenSidebar({ dens }: DenSidebarProps) {
     if (!name.trim()) return;
     setLoading(true);
     try {
-      const newDen = await createDen({ name, description, icon });
+      const newDen = await createDen({ name, description, icon, passcode });
       setIsOpen(false);
       setName("");
       setDescription("");
+      setPasscode("1234");
       router.push(`/d/${newDen.slug}/general`);
     } catch (err) {
       console.error(err);
@@ -175,6 +177,20 @@ export default function DenSidebar({ dens }: DenSidebarProps) {
                     placeholder="What is this community about?"
                     rows={3}
                     className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-white focus:outline-none focus:border-indigo-500 transition resize-none"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="den-passcode" className="block text-[#b5bac1] uppercase text-xs font-bold mb-2">Den Invite Passcode</label>
+                  <input
+                    id="den-passcode"
+                    type="text"
+                    required
+                    maxLength={10}
+                    value={passcode}
+                    onChange={(e) => setPasscode(e.target.value)}
+                    placeholder="e.g. 1234"
+                    className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-white focus:outline-none focus:border-indigo-500 transition"
                   />
                 </div>
 

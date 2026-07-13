@@ -10,26 +10,43 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  username  String   @unique
-  avatar    String   // Path or avatar slug
-  bio       String?
-  createdAt DateTime @default(now())
-  posts     Post[]
-  comments  Comment[]
-  votes     Vote[]
+  id         Int         @id @default(autoincrement())
+  username   String      @unique
+  avatar     String      // Path or avatar slug
+  bio        String?
+  createdAt  DateTime    @default(now())
+  posts      Post[]
+  comments   Comment[]
+  votes      Vote[]
+  ownedDens  Den[]       @relation("DenOwner")
+  joinedDens DenMember[]
 }
 
 model Den {
-  id          Int       @id @default(autoincrement())
-  name        String    @unique
-  slug        String    @unique
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  slug        String       @unique
   description String
-  banner      String?   // Banner style/color/image
-  icon        String?   // Icon initials or custom style
-  createdAt   DateTime  @default(now())
+  banner      String?      // Banner style/color/image
+  icon        String?      // Icon initials or custom style
+  createdAt   DateTime     @default(now())
+  ownerId     Int?
+  owner       User?        @relation("DenOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  passcode    String       @default("1234") // Invite passcode to protect entry
   channels    Channel[]
   posts       Post[]
+  members     DenMember[]
+}
+
+model DenMember {
+  id       Int      @id @default(autoincrement())
+  denId    Int
+  den      Den      @relation(fields: [denId], references: [id], onDelete: Cascade)
+  userId   Int
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@unique([denId, userId])
 }
 
 model Channel {

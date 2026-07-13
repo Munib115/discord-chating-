@@ -3,6 +3,8 @@ import { getLoggedInUser, getAllUsers } from "@/app/actions";
 import ChannelSidebar from "@/components/ChannelSidebar";
 import PostCard from "@/components/PostCard";
 import CommentSection from "@/components/CommentSection";
+import LockScreen from "@/components/LockScreen";
+import MemberList from "@/components/MemberList";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Metadata } from "next";
@@ -47,6 +49,11 @@ export default async function PostDetailPage({ params }: PageProps) {
           channels: {
             orderBy: { name: "asc" },
           },
+          members: {
+            include: {
+              user: true,
+            },
+          },
         },
       },
       channel: true,
@@ -63,6 +70,11 @@ export default async function PostDetailPage({ params }: PageProps) {
   });
 
   if (!post) notFound();
+
+  // Verify membership permissions
+  const isMember = currentUser
+    ? post.den.ownerId === currentUser.id || post.den.members.some((m) => m.userId === currentUser.id)
+    : false;
 
   // JSON-LD structured data for discussion forum search indexing
   const jsonLd = {
@@ -103,35 +115,44 @@ export default async function PostDetailPage({ params }: PageProps) {
 
       {/* 3. Main Detailed Post Panel */}
       <main className="flex-1 bg-[#313338] flex overflow-hidden min-w-0">
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto px-6 py-4 gap-4">
-          {/* Back button */}
-          <div className="flex items-center select-none pb-1.5 border-b border-[#232428]">
-            <Link
-              href={`/d/${post.den.slug}/${post.channel.slug}`}
-              className="text-xs text-[#949ba4] hover:text-white flex items-center gap-1.5 font-bold uppercase transition"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-              <span>Back to #{post.channel.name}</span>
-            </Link>
-          </div>
+        {!isMember ? (
+          <LockScreen
+            denId={post.den.id}
+            denName={post.den.name}
+            denIcon={post.den.icon}
+            denSlug={post.den.slug}
+          />
+        ) : (
+          <div className="flex-1 flex flex-col min-w-0 overflow-y-auto px-6 py-4 gap-4">
+            {/* Back button */}
+            <div className="flex items-center select-none pb-1.5 border-b border-[#232428]">
+              <Link
+                href={`/d/${post.den.slug}/${post.channel.slug}`}
+                className="text-xs text-[#949ba4] hover:text-white flex items-center gap-1.5 font-bold uppercase transition"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+                <span>Back to #{post.channel.name}</span>
+              </Link>
+            </div>
 
-          {/* Expanded Post Card */}
-          <PostCard post={{
-            ...post,
-            _count: { comments: post.comments.length }
-          }} currentUserId={currentUser?.id} />
+            {/* Expanded Post Card */}
+            <PostCard post={{
+              ...post,
+              _count: { comments: post.comments.length }
+            }} currentUserId={currentUser?.id} />
 
-          {/* Comment Thread Component */}
-          <div className="bg-[#2b2d31] border border-[#232428] rounded-md p-4">
-            <CommentSection
-              postId={post.id}
-              comments={post.comments}
-              currentUserId={currentUser?.id}
-            />
+            {/* Comment Thread Component */}
+            <div className="bg-[#2b2d31] border border-[#232428] rounded-md p-4">
+              <CommentSection
+                postId={post.id}
+                comments={post.comments}
+                currentUserId={currentUser?.id}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Right Sidebar (Den Details) */}
         <aside className="w-64 border-l border-[#232428] bg-[#2b2d31]/30 hidden lg:flex flex-col p-4 gap-4 overflow-y-auto no-scrollbar select-none">
@@ -157,6 +178,16 @@ export default async function PostDetailPage({ params }: PageProps) {
               </div>
             </div>
           </div>
+
+          {/* Members List Panel */}
+          {isMember && (
+            <MemberList
+              denId={post.den.id}
+              members={post.den.members}
+              ownerId={post.den.ownerId}
+              currentUserId={currentUser?.id}
+            />
+          )}
         </aside>
       </main>
     </div>

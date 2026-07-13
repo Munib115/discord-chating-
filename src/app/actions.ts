@@ -150,7 +150,11 @@ export async function createDen(formData: {
   name: string;
   description: string;
   icon: string;
+  passcode?: string;
 }) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
   const slug = formData.name
     .toLowerCase()
     .trim()
@@ -166,6 +170,7 @@ export async function createDen(formData: {
     "from-cyan-600 to-slate-900"
   ];
   const randomBanner = bannerGradients[Math.floor(Math.random() * bannerGradients.length)];
+  const passcode = formData.passcode?.trim() || "1234";
 
   const den = await prisma.den.create({
     data: {
@@ -174,6 +179,16 @@ export async function createDen(formData: {
       description: formData.description,
       banner: randomBanner,
       icon: formData.icon,
+      ownerId: user.id,
+      passcode: passcode,
+    },
+  });
+
+  // Automatically join the Den as creator
+  await prisma.denMember.create({
+    data: {
+      denId: den.id,
+      userId: user.id,
     },
   });
 
@@ -216,4 +231,59 @@ export async function createChannel(formData: {
 
   revalidatePath(`/d/${den.slug}`);
   return channel;
+}
+
+export async function joinDenWithPasscode(denId: number, passcode: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const den = await prisma.den.findUnique({
+    where: { id: denId },
+  });
+
+  if (!den) throw new Error("Den not found");
+
+  if (den.passcode !== passcode.trim()) {
+    throw new Error("Invalid passcode. Please try again.");
+  }
+
+  // Create membership
+  await prisma.denMember.create({
+    data: {
+      denId: denId,
+      userId: user.id,
+    },
+  });
+
+  revalidatePath(`/d/${den.slug}`);
+  revalidatePath("/");
+}
+
+export async function kickUserFromDen(denId: number, userId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const den = await prisma.den.findUnique({
+    where: { id: denId },
+  });
+
+  if (!den) throw new Error("Den not found");
+
+  // Verify that the current user is the owner
+  if (den.ownerId !== user.id) {
+    throw new Error("Only the Den creator (admin) can kick members.");
+  }
+
+  // Delete the membership record
+  await prisma.denMember.delete({
+    where: {
+      denId_userId: {
+        denId: denId,
+        userId: userId,
+      },
+    },
+  });
+
+  revalidatePath(`/d/${den.slug}`);
+  revalidatePath("/");
 }
