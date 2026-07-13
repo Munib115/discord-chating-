@@ -3,6 +3,7 @@ import { getLoggedInUser, getAllUsers } from "@/app/actions";
 import ChannelSidebar from "@/components/ChannelSidebar";
 import PostCard from "@/components/PostCard";
 import CreatePostModal from "@/components/CreatePostModal";
+import ChatRoom from "@/components/ChatRoom";
 import { notFound } from "next/navigation";
 import { Metadata } from "next";
 
@@ -74,6 +75,8 @@ export default async function ChannelPage({ params }: PageProps) {
     },
   });
 
+  const isChatMode = channel.slug === "general" || channel.slug.includes("chat");
+
   return (
     <div className="flex flex-1 overflow-hidden min-w-0">
       {/* 2. Channel Sidebar */}
@@ -86,7 +89,7 @@ export default async function ChannelPage({ params }: PageProps) {
 
       {/* 3. Main Chat Feed Area */}
       <main className="flex-1 bg-[#313338] flex overflow-hidden min-w-0">
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto px-6 py-4 gap-4">
+        <div className={`flex-1 flex flex-col min-w-0 px-6 py-4 gap-4 ${isChatMode ? "overflow-hidden" : "overflow-y-auto"}`}>
           {/* Header Bar */}
           <header className="flex items-center justify-between pb-3 border-b border-[#232428]">
             <div>
@@ -95,38 +98,57 @@ export default async function ChannelPage({ params }: PageProps) {
                 {channel.name}
               </h2>
               <p className="text-xs text-[#949ba4] mt-0.5 select-none">
-                Welcome to the beginning of the #{channel.name} channel!
+                {isChatMode
+                  ? `Real-time chat lobby for #${channel.name}`
+                  : `Welcome to the beginning of the #${channel.name} channel!`}
               </p>
             </div>
           </header>
 
-          {/* Create Post Bar (Mock Auth session check) */}
-          {currentUser && (
-            <CreatePostModal
-              denId={den.id}
-              channels={den.channels}
-              activeChannelId={channel.id}
-              username={currentUser.username}
-              avatar={currentUser.avatar}
-            />
-          )}
-
-          {/* Posts List */}
-          <div className="flex flex-col gap-3">
-            {posts.length > 0 ? (
-              posts.map((post) => (
-                <PostCard key={post.id} post={post} currentUserId={currentUser?.id} />
-              ))
+          {/* Render ChatRoom for chat channels, otherwise render Reddit posts feed */}
+          {isChatMode ? (
+            currentUser ? (
+              <ChatRoom
+                channelId={channel.id}
+                currentUser={currentUser}
+                allUsers={allUsers}
+              />
             ) : (
-              <div className="text-center py-16 bg-[#2b2d31]/30 rounded-md border border-dashed border-[#232428] p-6 select-none">
-                <span className="text-3xl">💬</span>
-                <h3 className="text-lg font-bold text-white mt-2">No posts here yet</h3>
-                <p className="text-sm text-[#949ba4] mt-1">
-                  Be the first to share your thoughts in #{channel.name}!
-                </p>
+              <div className="bg-[#1e1f22]/50 p-4 rounded text-center text-sm text-[#949ba4]">
+                You must be logged in to participate in the real-time chat. Select a character profile from the bottom left!
               </div>
-            )}
-          </div>
+            )
+          ) : (
+            <>
+              {/* Create Post Bar (Mock Auth session check) */}
+              {currentUser && (
+                <CreatePostModal
+                  denId={den.id}
+                  channels={den.channels}
+                  activeChannelId={channel.id}
+                  username={currentUser.username}
+                  avatar={currentUser.avatar}
+                />
+              )}
+
+              {/* Posts List */}
+              <div className="flex flex-col gap-3">
+                {posts.length > 0 ? (
+                  posts.map((post) => (
+                    <PostCard key={post.id} post={post} currentUserId={currentUser?.id} />
+                  ))
+                ) : (
+                  <div className="text-center py-16 bg-[#2b2d31]/30 rounded-md border border-dashed border-[#232428] p-6 select-none">
+                    <span className="text-3xl">💬</span>
+                    <h3 className="text-lg font-bold text-white mt-2">No posts here yet</h3>
+                    <p className="text-sm text-[#949ba4] mt-1">
+                      Be the first to share your thoughts in #{channel.name}!
+                    </p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right Sidebar (Den Info Details) */}
