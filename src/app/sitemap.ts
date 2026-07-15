@@ -20,7 +20,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       include: { den: true },
     });
 
-    channels.forEach((c) => {
+    channels.forEach((c: any) => {
       routes.push({
         url: `${baseUrl}/d/${c.den.slug}/${c.slug}`,
         lastModified: new Date(),
@@ -32,7 +32,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Dynamic thread views
     const posts = await prisma.post.findMany();
 
-    posts.forEach((p) => {
+    posts.forEach((p: any) => {
       routes.push({
         url: `${baseUrl}/posts/${p.id}`,
         lastModified: p.updatedAt || new Date(),
