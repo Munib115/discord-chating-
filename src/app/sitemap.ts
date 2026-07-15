@@ -1,6 +1,18 @@
 import { MetadataRoute } from "next";
 import { prisma } from "@/lib/db";
 
+interface ChannelType {
+  slug: string;
+  den: {
+    slug: string;
+  };
+}
+
+interface PostType {
+  id: number;
+  updatedAt: Date;
+}
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = "https://otakuden.example.com";
 
@@ -20,7 +32,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       include: { den: true },
     });
 
-    channels.forEach((c: any) => {
+    channels.forEach((c: ChannelType) => {
       routes.push({
         url: `${baseUrl}/d/${c.den.slug}/${c.slug}`,
         lastModified: new Date(),
@@ -32,7 +44,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // Dynamic thread views
     const posts = await prisma.post.findMany();
 
-    posts.forEach((p: any) => {
+    posts.forEach((p: PostType) => {
       routes.push({
         url: `${baseUrl}/posts/${p.id}`,
         lastModified: p.updatedAt || new Date(),
