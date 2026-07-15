@@ -80,7 +80,7 @@ export default async function HomePage({ searchParams }: PageProps) {
     });
   } else if (currentTab === "dm" && recipientIdStr) {
     const rId = Number(recipientIdStr);
-    recipientUser = allUsers.find((u) => u.id === rId);
+    recipientUser = allUsers.find((u: any) => u.id === rId);
 
     if (currentUser && recipientUser) {
       // Compute a deterministic unique DM channel ID based on sorted user IDs

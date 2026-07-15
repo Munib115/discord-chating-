@@ -73,7 +73,7 @@ export default async function PostDetailPage({ params }: PageProps) {
 
   // Verify membership permissions
   const isMember = currentUser
-    ? post.den.ownerId === currentUser.id || post.den.members.some((m) => m.userId === currentUser.id)
+    ? post.den.ownerId === currentUser.id || post.den.members.some((m: any) => m.userId === currentUser.id)
     : false;
 
   // JSON-LD structured data for discussion forum search indexing
