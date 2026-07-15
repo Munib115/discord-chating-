@@ -125,7 +125,7 @@ export default async function HomePage({ searchParams }: PageProps) {
               Top Active Otakus
             </h4>
             <div className="flex flex-col gap-2.5">
-              {topUsers.map((tu) => (
+              {topUsers.map((tu: any) => (
                 <div key={tu.id} className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2 min-w-0">
                     <Avatar avatar={tu.avatar} className="w-6 h-6 text-[10px]" />
@@ -225,7 +225,7 @@ export default async function HomePage({ searchParams }: PageProps) {
                 {/* Feed Grid */}
                 <div className="flex flex-col gap-3">
                   {posts.length > 0 ? (
-                    posts.map((post) => (
+                    posts.map((post: any) => (
                       <PostCard key={post.id} post={post} currentUserId={currentUser?.id} />
                     ))
                   ) : (
@@ -244,7 +244,7 @@ export default async function HomePage({ searchParams }: PageProps) {
             ) : (
               /* Explore Dens Grid */
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {dens.map((den) => (
+                {dens.map((den: any) => (
                   <div
                     key={den.id}
                     className="bg-[#2b2d31] border border-[#232428] rounded-md overflow-hidden flex flex-col hover:border-[#35373c] transition group"
