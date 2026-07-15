@@ -70,7 +70,7 @@ export default async function ChannelPage({ params }: PageProps) {
 
   // Verify Den membership permissions (auto-join)
   let isMember = currentUser
-    ? den.ownerId === currentUser.id || den.members.some((m) => m.userId === currentUser.id)
+    ? den.ownerId === currentUser.id || den.members.some((m: any) => m.userId === currentUser.id)
     : false;
 
   if (currentUser && !isMember) {
@@ -103,7 +103,7 @@ export default async function ChannelPage({ params }: PageProps) {
   // Auto-join #general channel by default
   const isGeneralChannel = channel.slug === "general";
   let isChannelMember = currentUser
-    ? channelMembers.some((m) => m.userId === currentUser.id)
+    ? channelMembers.some((m: any) => m.userId === currentUser.id)
     : false;
 
   if (currentUser && !isChannelMember && isGeneralChannel) {
