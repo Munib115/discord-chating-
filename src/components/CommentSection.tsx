@@ -2,7 +2,7 @@
 
 import React, { useState, useTransition } from "react";
 import { createComment } from "@/app/actions";
-import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
+import Avatar from "./Avatar";
 
 interface User {
   id: number;
@@ -82,13 +82,7 @@ export default function CommentSection({
         {/* Comment Core */}
         <div className="flex gap-2.5">
           {/* Avatar */}
-          <div
-            className={`w-7 h-7 rounded-full border flex items-center justify-center text-xs flex-shrink-0 mt-0.5 ${getAvatarBg(
-              comment.author.avatar
-            )}`}
-          >
-            {getAvatarEmoji(comment.author.avatar)}
-          </div>
+          <Avatar avatar={comment.author.avatar} className="w-7 h-7 text-[10px] mt-0.5" />
 
           <div className="flex flex-col flex-1 min-w-0 bg-[#1e1f22]/30 rounded p-2.5 border border-[#232428]/40">
             {/* Meta */}

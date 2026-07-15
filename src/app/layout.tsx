@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Geist } from "next/font/google";
 import "./globals.css";
 import { prisma } from "@/lib/db";
 import DenSidebar from "@/components/DenSidebar";
+import { cn } from "@/lib/utils";
+import { getLoggedInUser } from "@/app/actions";
+import RegisterModal from "@/components/RegisterModal";
+
+const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -19,6 +24,8 @@ export const metadata: Metadata = {
   },
 };
 
+import { MobileLayoutProvider } from "@/contexts/MobileLayoutContext";
+
 export default async function RootLayout({
   children,
 }: Readonly<{
@@ -29,16 +36,42 @@ export default async function RootLayout({
     orderBy: { id: "asc" },
   });
 
+  // Check if the current visitor has a registered identity
+  const currentUser = await getLoggedInUser();
+
   return (
-    <html lang="en" className="h-full antialiased dark">
-      <body className={`${inter.className} bg-[#1e1f22] text-[#dbdee1] min-h-screen flex overflow-hidden`}>
-        {/* Leftmost Den List (Permanent Sidebar) */}
-        <DenSidebar dens={dens} />
-        
-        {/* Child Pages (containing Channel sidebar and Main Content) */}
-        <div className="flex flex-1 overflow-hidden min-w-0">
-          {children}
-        </div>
+    <html lang="en" className={cn("h-full antialiased dark", "font-sans", geist.variable)} suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem('otakuden_theme');
+                  if (theme) {
+                    document.documentElement.setAttribute('data-theme', theme);
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+      </head>
+      <body className={`${inter.className} bg-[#1e1f22] text-[#dbdee1] h-screen max-h-screen flex overflow-hidden`}>
+        <MobileLayoutProvider>
+          {/* Registration gate — shown when no user cookie exists */}
+          {!currentUser && <RegisterModal />}
+
+          {/* Leftmost Den List (Permanent Sidebar) - Hidden on mobile, shown on md+ */}
+          <div className="hidden md:flex flex-shrink-0">
+            <DenSidebar dens={dens} />
+          </div>
+          
+          {/* Child Pages (containing Channel sidebar and Main Content) */}
+          <div className="flex flex-1 overflow-hidden min-w-0">
+            {children}
+          </div>
+        </MobileLayoutProvider>
       </body>
     </html>
   );

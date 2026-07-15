@@ -3,7 +3,7 @@
 import React, { useTransition } from "react";
 import Link from "next/link";
 import { votePost } from "@/app/actions";
-import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
+import Avatar from "./Avatar";
 
 interface User {
   id: number;
@@ -116,13 +116,7 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
       <div className="flex-1 p-3.5 flex flex-col gap-2 min-w-0">
         {/* Post Metadata Header */}
         <div className="flex items-center gap-1.5 flex-wrap text-xs text-[#949ba4]">
-          <span
-            className={`w-5.5 h-5.5 rounded-full border flex items-center justify-center text-xs ${getAvatarBg(
-              post.author.avatar
-            )}`}
-          >
-            {getAvatarEmoji(post.author.avatar)}
-          </span>
+          <Avatar avatar={post.author.avatar} className="w-5.5 h-5.5 text-[10px]" />
           <span className="font-semibold text-slate-200">{post.author.username}</span>
           <span>•</span>
           <span>posted in</span>

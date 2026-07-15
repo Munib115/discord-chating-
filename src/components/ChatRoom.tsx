@@ -2,7 +2,9 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
+import Avatar from "./Avatar";
+import { getAvatarEmoji } from "@/lib/avatar";
+import { forwardMessageToDiscord } from "@/app/actions";
 
 // Initialize Supabase Client dynamically from process env
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -28,9 +30,10 @@ interface ChatRoomProps {
   channelId: number;
   currentUser: User;
   allUsers: User[];
+  isOwner?: boolean;
 }
 
-export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomProps) {
+  export default function ChatRoom({ channelId, currentUser, allUsers, isOwner = false }: ChatRoomProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -44,6 +47,16 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Discord Premium States
+  const [typingUsers, setTypingUsers] = useState<{ id: number; username: string }[]>([]);
+  const [isTypingSelf, setIsTypingSelf] = useState(false);
+  const [activeReactionMenu, setActiveReactionMenu] = useState<number | null>(null);
+
+  // Refs for typing indicators & realtime connection
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingCleanupsRef = useRef<Record<number, NodeJS.Timeout>>({});
+  const channelRef = useRef<any>(null);
 
   // Helper to resolve user profiles locally
   const getAuthorDetails = (authorId: number) => {
@@ -60,6 +73,7 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
 
     const fetchMessages = async () => {
       setFetchError(null);
+      // Fetch messages for this channel
       const { data, error } = await supabase
         .from("Message")
         .select("*")
@@ -76,27 +90,107 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
 
     fetchMessages();
 
-    // Subscribe to INSERT events on the Message table matching the channel
+    const topic = `chat-room-${channelId}`;
+
+    // Clean up duplicate cached channels in StrictMode double-mount cases
+    const existing = supabase.getChannels().find(
+      (c) => c.topic === `realtime:${topic}` || c.topic === topic
+    );
+    if (existing) {
+      supabase.removeChannel(existing);
+    }
+    if ((supabase as any).realtime) {
+      (supabase as any).realtime.channels = (supabase as any).realtime.channels.filter(
+        (c: any) => c.topic !== `realtime:${topic}` && c.topic !== topic
+      );
+    }
+
     const channel = supabase
-      .channel(`chat-room-${channelId}`)
+      .channel(topic)
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*",
           schema: "public",
           table: "Message",
-          filter: `channelId=eq.${channelId}`,
         },
         (payload) => {
-          setMessages((current) => [...current, payload.new as Message]);
+          if (payload.eventType === "INSERT") {
+            const newMsg = payload.new as Message;
+            if (newMsg.channelId === channelId) {
+              setMessages((current) => {
+                // Deduplicate and replace the optimistic temporary message
+                const filtered = current.filter(
+                  (m) =>
+                    !(
+                      m.id < 1 &&
+                      m.authorId === newMsg.authorId &&
+                      m.content === newMsg.content
+                    )
+                );
+                if (filtered.some((m) => m.id === newMsg.id)) return filtered;
+                return [...filtered, newMsg];
+              });
+            }
+          } else if (payload.eventType === "DELETE") {
+            setMessages((current) => current.filter((m) => m.id !== payload.old.id));
+          }
+        }
+      )
+      .on(
+        "broadcast",
+        { event: "typing" },
+        (payload) => {
+          const { userId, username, isTyping } = payload.payload;
+          if (userId === currentUser.id) return; // ignore self
+
+          if (typingCleanupsRef.current[userId]) {
+            clearTimeout(typingCleanupsRef.current[userId]);
+            delete typingCleanupsRef.current[userId];
+          }
+
+          if (isTyping) {
+            setTypingUsers((prev) => {
+              if (prev.some((u) => u.id === userId)) return prev;
+              return [...prev, { id: userId, username }];
+            });
+
+            // Auto cleanup after 5 seconds of inactivity
+            typingCleanupsRef.current[userId] = setTimeout(() => {
+              setTypingUsers((prev) => prev.filter((u) => u.id !== userId));
+              delete typingCleanupsRef.current[userId];
+            }, 5000);
+          } else {
+            setTypingUsers((prev) => prev.filter((u) => u.id !== userId));
+          }
         }
       )
       .subscribe();
 
+    channelRef.current = channel;
+
     return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      Object.values(typingCleanupsRef.current).forEach(clearTimeout);
+      typingCleanupsRef.current = {};
+
+      // Stop typing broadcast on unmount
+      channel.send({
+        type: "broadcast",
+        event: "typing",
+        payload: {
+          userId: currentUser.id,
+          username: currentUser.username,
+          isTyping: false,
+        },
+      });
+
       supabase.removeChannel(channel);
+      channelRef.current = null;
     };
-  }, [channelId]);
+  }, [channelId, currentUser]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -136,6 +230,20 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
     };
   }, [isRecording]);
 
+  const sendTypingBroadcast = async (isTyping: boolean) => {
+    if (channelRef.current) {
+      await channelRef.current.send({
+        type: "broadcast",
+        event: "typing",
+        payload: {
+          userId: currentUser.id,
+          username: currentUser.username,
+          isTyping,
+        },
+      });
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !supabaseUrl || !supabaseAnonKey) return;
@@ -144,6 +252,25 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
     const parentId = replyingTo?.id || null;
     setInputText("");
     setReplyingTo(null);
+
+    // Stop typing indicator on send
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    setIsTypingSelf(false);
+    sendTypingBroadcast(false);
+
+    // Insert optimistic message with temp ID (float < 1)
+    const tempId = Math.random();
+    const tempMessage: Message = {
+      id: tempId,
+      content: messageContent,
+      createdAt: new Date().toISOString(),
+      authorId: currentUser.id,
+      channelId: channelId,
+      replyToId: parentId,
+    };
+    setMessages((current) => [...current, tempMessage]);
 
     const { error } = await supabase.from("Message").insert([
       {
@@ -154,7 +281,14 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
       },
     ]);
 
-    if (error) console.error("Error sending message:", error);
+    if (error) {
+      console.error("Error sending message:", error);
+      // Rollback optimistic message if send failed
+      setMessages((current) => current.filter((m) => m.id !== tempId));
+      alert("Failed to send message: " + error.message);
+    } else {
+      await forwardMessageToDiscord(currentUser.username, messageContent, getAvatarEmoji(currentUser.avatar));
+    }
   };
 
   // Image Upload handler (via ImgBB)
@@ -176,16 +310,38 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
         });
         const resData = await res.json();
         if (resData.success) {
+          const imgContent = `img:${resData.data.url}`;
+          const targetReplyTo = replyingTo?.id || null;
+          setReplyingTo(null);
+
+          // Insert optimistic image message
+          const tempId = Math.random();
+          const tempMessage: Message = {
+            id: tempId,
+            content: imgContent,
+            createdAt: new Date().toISOString(),
+            authorId: currentUser.id,
+            channelId: channelId,
+            replyToId: targetReplyTo,
+          };
+          setMessages((current) => [...current, tempMessage]);
+
           // Send message formatted as img:URL
-          await supabase.from("Message").insert([
+          const { error } = await supabase.from("Message").insert([
             {
-              content: `img:${resData.data.url}`,
+              content: imgContent,
               authorId: currentUser.id,
               channelId: channelId,
-              replyToId: replyingTo?.id || null,
+              replyToId: targetReplyTo,
             },
           ]);
-          setReplyingTo(null);
+          if (error) {
+            console.error("Error sending image:", error);
+            setMessages((current) => current.filter((m) => m.id !== tempId));
+            alert("Failed to send image: " + error.message);
+          } else {
+            await forwardMessageToDiscord(currentUser.username, imgContent, getAvatarEmoji(currentUser.avatar));
+          }
         } else {
           console.error("ImgBB upload failed:", resData.error.message);
         }
@@ -215,17 +371,37 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
         reader.readAsDataURL(audioBlob);
         reader.onloadend = async () => {
           const base64Audio = reader.result as string;
+          const targetReplyTo = replyingTo?.id || null;
+          setReplyingTo(null);
+
+          // Insert optimistic voice note
+          const tempId = Math.random();
+          const tempMessage: Message = {
+            id: tempId,
+            content: base64Audio,
+            createdAt: new Date().toISOString(),
+            authorId: currentUser.id,
+            channelId: channelId,
+            replyToId: targetReplyTo,
+          };
+          setMessages((current) => [...current, tempMessage]);
 
           // Send to Supabase as text
-          await supabase.from("Message").insert([
+          const { error } = await supabase.from("Message").insert([
             {
               content: base64Audio,
               authorId: currentUser.id,
               channelId: channelId,
-              replyToId: replyingTo?.id || null,
+              replyToId: targetReplyTo,
             },
           ]);
-          setReplyingTo(null);
+          if (error) {
+            console.error("Error sending voice note:", error);
+            setMessages((current) => current.filter((m) => m.id !== tempId));
+            alert("Failed to send voice note: " + error.message);
+          } else {
+            await forwardMessageToDiscord(currentUser.username, base64Audio, getAvatarEmoji(currentUser.avatar));
+          }
         };
 
         // Stop micro tracks
@@ -251,6 +427,38 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
     const mins = Math.floor(secs / 60);
     const remainingSecs = secs % 60;
     return `${mins}:${remainingSecs < 10 ? "0" : ""}${remainingSecs}`;
+  };
+
+  const toggleReaction = async (msgId: number, emoji: string) => {
+    const rxContent = `rx:${emoji}:${msgId}`;
+    const existingRx = messages.find(
+      (m) => m.content === rxContent && m.authorId === currentUser.id
+    );
+
+    if (existingRx) {
+      await supabase.from("Message").delete().eq("id", existingRx.id);
+    } else {
+      await supabase.from("Message").insert([
+        {
+          content: rxContent,
+          authorId: currentUser.id,
+          channelId: channelId,
+        },
+      ]);
+    }
+  };
+
+  const handleDeleteMessage = async (msgId: number) => {
+    // Delete target message
+    await supabase.from("Message").delete().eq("id", msgId);
+
+    // Delete associated reactions
+    const rxMessages = messages.filter(
+      (m) => m.content.startsWith("rx:") && m.content.endsWith(`:${msgId}`)
+    );
+    for (const rx of rxMessages) {
+      await supabase.from("Message").delete().eq("id", rx.id);
+    }
   };
 
   if (!supabaseUrl || !supabaseAnonKey) {
@@ -283,85 +491,203 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
           </div>
         )}
 
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-[#949ba4] text-xs text-center select-none">
-            <span className="text-3xl">💬</span>
-            <p className="mt-2 font-medium">This is the start of the chat room.</p>
-            <p className="text-3xs text-[#80848e] mt-0.5">Real-time messages sent here sync immediately via Supabase Websockets.</p>
-          </div>
-        ) : (
-          messages.map((msg) => {
-            const author = getAuthorDetails(msg.authorId);
-            const parentMsg = msg.replyToId ? messages.find((m) => m.id === msg.replyToId) : null;
-            const parentAuthor = parentMsg ? getAuthorDetails(parentMsg.authorId) : null;
+        {(() => {
+          const chatMessages = messages.filter((m) => !m.content.startsWith("rx:"));
+          const reactionMessages = messages.filter((m) => m.content.startsWith("rx:"));
 
-            const isAudio = msg.content.startsWith("data:audio/");
-            const isImage = msg.content.startsWith("img:");
+          // Compile reactions mapping: msgId -> { emoji -> [userIds] }
+          const reactionsByMessageId: Record<number, Record<string, number[]>> = {};
+          reactionMessages.forEach((rx) => {
+            const parts = rx.content.split(":");
+            if (parts.length >= 3) {
+              const emoji = parts[1];
+              const targetMsgId = Number(parts[2]);
+              if (!reactionsByMessageId[targetMsgId]) {
+                reactionsByMessageId[targetMsgId] = {};
+              }
+              if (!reactionsByMessageId[targetMsgId][emoji]) {
+                reactionsByMessageId[targetMsgId][emoji] = [];
+              }
+              if (!reactionsByMessageId[targetMsgId][emoji].includes(rx.authorId)) {
+                reactionsByMessageId[targetMsgId][emoji].push(rx.authorId);
+              }
+            }
+          });
 
+          if (chatMessages.length === 0) {
             return (
-              <div key={msg.id || Math.random()} className="flex flex-col relative group select-none">
-                {/* 1. Reply Connector Line Above Message */}
-                {parentMsg && parentAuthor && (
-                  <div className="flex items-center gap-1.5 text-[#b5bac1] text-xs ml-[18px] mb-1 select-none">
-                    <div className="w-6 h-2 border-l-2 border-t-2 border-[#4e5058] rounded-tl-md mr-1.5 -mb-2 mt-1" />
-                    <span className={`w-4 h-4 rounded-full border flex items-center justify-center text-[9px] flex-shrink-0 ${getAvatarBg(parentAuthor.avatar)}`}>
-                      {getAvatarEmoji(parentAuthor.avatar)}
-                    </span>
-                    <span className="font-semibold text-slate-300">@{parentAuthor.username}</span>
-                    <span className="truncate max-w-[300px] text-slate-400 text-3xs font-medium bg-[#1e1f22]/40 px-1.5 py-0.5 rounded italic">
-                      {parentMsg.content.startsWith("data:audio/") ? "🎙️ Voice Note" : parentMsg.content.startsWith("img:") ? "🖼️ Image Attachment" : parentMsg.content}
-                    </span>
-                  </div>
-                )}
-
-                {/* 2. Message Body */}
-                <div className="flex items-start gap-3 hover:bg-[#2e3035]/30 -mx-4 px-4 py-1 rounded transition select-text">
-                  <div className={`w-9 h-9 rounded-full border flex items-center justify-center text-sm flex-shrink-0 mt-0.5 ${getAvatarBg(author.avatar)}`}>
-                    {getAvatarEmoji(author.avatar)}
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <div className="flex items-baseline gap-2">
-                      <span className="font-semibold text-white text-sm truncate">{author.username}</span>
-                      <span className="text-[10px] text-[#949ba4] select-none">
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    </div>
-
-                    {/* Rendering Audio, Image, or standard Text */}
-                    {isAudio ? (
-                      <div className="mt-1 select-none">
-                        <audio src={msg.content} controls className="max-w-xs h-9 rounded bg-[#1e1f22] p-1 border border-[#232428] focus:outline-none" />
-                      </div>
-                    ) : isImage ? (
-                      <div className="mt-1 max-w-sm rounded-md overflow-hidden bg-[#1e1f22] border border-[#232428] select-none flex">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={msg.content.replace("img:", "")}
-                          alt="Attachment"
-                          className="max-h-60 w-auto object-contain cursor-pointer hover:scale-[1.01] transition duration-200"
-                        />
-                      </div>
-                    ) : (
-                      <p className="text-slate-300 text-sm mt-0.5 leading-relaxed break-words">{msg.content}</p>
-                    )}
-                  </div>
-
-                  {/* 3. Discord-like Floating Action Bar on Hover */}
-                  <div className="absolute right-4 top-1 hidden group-hover:flex bg-[#313338] border border-[#232428] rounded shadow-md z-10 px-1 py-0.5 select-none">
-                    <button
-                      onClick={() => setReplyingTo(msg)}
-                      className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition"
-                      title="Reply"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
+              <div className="flex flex-col items-center justify-center h-full text-[#949ba4] text-xs text-center select-none">
+                <span className="text-3xl">💬</span>
+                <p className="mt-2 font-medium">This is the start of the chat room.</p>
+                <p className="text-3xs text-[#80848e] mt-0.5">Real-time messages sent here sync immediately via Supabase Websockets.</p>
               </div>
             );
-          })
+          }
+
+          return (
+            <>
+              {chatMessages.map((msg) => {
+                const author = getAuthorDetails(msg.authorId);
+                const parentMsg = msg.replyToId ? chatMessages.find((m) => m.id === msg.replyToId) : null;
+                const parentAuthor = parentMsg ? getAuthorDetails(parentMsg.authorId) : null;
+
+                const isAudio = msg.content.startsWith("data:audio/");
+                const isImage = msg.content.startsWith("img:");
+
+                return (
+                  <div key={msg.id || Math.random()} className="flex flex-col relative group select-none">
+                    {/* 1. Reply Connector Line Above Message */}
+                    {parentMsg && parentAuthor && (
+                      <div className="flex items-center gap-1.5 text-[#b5bac1] text-xs ml-[18px] mb-1 select-none">
+                        <div className="w-6 h-2 border-l-2 border-t-2 border-[#4e5058] rounded-tl-md mr-1.5 -mb-2 mt-1" />
+                        <Avatar avatar={parentAuthor.avatar} className="w-4 h-4 text-[9px]" />
+                        <span className="font-semibold text-slate-300">@{parentAuthor.username}</span>
+                        <span className="truncate max-w-[300px] text-slate-400 text-3xs font-medium bg-[#1e1f22]/40 px-1.5 py-0.5 rounded italic">
+                          {parentMsg.content.startsWith("data:audio/") ? "🎙️ Voice Note" : parentMsg.content.startsWith("img:") ? "🖼️ Image Attachment" : parentMsg.content}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* 2. Message Body */}
+                    <div className="flex items-start gap-3 hover:bg-[#2e3035]/30 -mx-4 px-4 py-1 rounded transition select-text">
+                      <Avatar avatar={author.avatar} className="w-9 h-9 text-sm mt-0.5" />
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-semibold text-white text-sm truncate">{author.username}</span>
+                          <span className="text-[10px] text-[#949ba4] select-none">
+                            {new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </div>
+
+                        {/* Rendering Audio, Image, or standard Text */}
+                        {isAudio ? (
+                          <div className="mt-1 select-none">
+                            <audio src={msg.content} controls className="max-w-xs h-9 rounded bg-[#1e1f22] p-1 border border-[#232428] focus:outline-none" />
+                          </div>
+                        ) : isImage ? (
+                          <div className="mt-1 max-w-sm rounded-md overflow-hidden bg-[#1e1f22] border border-[#232428] select-none flex">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={msg.content.replace("img:", "")}
+                              alt="Attachment"
+                              className="max-h-60 w-auto object-contain cursor-pointer hover:scale-[1.01] transition duration-200"
+                            />
+                          </div>
+                        ) : (
+                          <p className="text-slate-300 text-sm mt-0.5 leading-relaxed break-words">{msg.content}</p>
+                        )}
+
+                        {/* Emoji Reactions List */}
+                        {reactionsByMessageId[msg.id] && Object.keys(reactionsByMessageId[msg.id]).length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-2 select-none">
+                            {Object.entries(reactionsByMessageId[msg.id]).map(([emoji, userIds]) => {
+                              const hasReacted = userIds.includes(currentUser.id);
+                              const usernames = userIds
+                                .map((uid) => getAuthorDetails(uid).username)
+                                .join(", ");
+
+                              return (
+                                <button
+                                  key={emoji}
+                                  onClick={() => toggleReaction(msg.id, emoji)}
+                                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs border transition ${
+                                    hasReacted
+                                      ? "bg-indigo-500/10 border-indigo-500 text-indigo-400 font-bold"
+                                      : "bg-[#2b2d31] border-[#1e1f22] text-[#949ba4] hover:text-white"
+                                  }`}
+                                  title={`Reacted by: ${usernames}`}
+                                >
+                                  <span>{emoji}</span>
+                                  <span className="text-[10px]">{userIds.length}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 3. Discord-like Floating Action Bar on Hover */}
+                      <div className="absolute right-4 top-1 hidden group-hover:flex bg-[#313338] border border-[#232428] rounded shadow-md z-10 px-1 py-0.5 select-none gap-0.5">
+                        {/* Emoji Reaction Button */}
+                        <div className="relative">
+                          <button
+                            onClick={() => setActiveReactionMenu(activeReactionMenu === msg.id ? null : msg.id)}
+                            className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition"
+                            title="Add Reaction"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          </button>
+
+                          {/* Floating Emoji Picker Popover */}
+                          {activeReactionMenu === msg.id && (
+                            <div className="absolute bottom-full right-0 mb-1 bg-[#111214] border border-[#232428] rounded-md shadow-2xl p-1.5 flex gap-1 z-50 animate-in fade-in slide-in-from-bottom-2 duration-100">
+                              {["👍", "🔥", "❤️", "😂", "⚔️", "🍖"].map((emoji) => {
+                                const isSelected = reactionsByMessageId[msg.id]?.[emoji]?.includes(currentUser.id);
+                                return (
+                                  <button
+                                    key={emoji}
+                                    onClick={() => {
+                                      toggleReaction(msg.id, emoji);
+                                      setActiveReactionMenu(null);
+                                    }}
+                                    className={`w-7 h-7 flex items-center justify-center rounded hover:bg-[#35373c] transition text-sm ${
+                                      isSelected ? "bg-indigo-500/20" : ""
+                                    }`}
+                                  >
+                                    {emoji}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <button
+                          onClick={() => setReplyingTo(msg)}
+                          className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition"
+                          title="Reply"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                          </svg>
+                        </button>
+
+                        {/* Delete Message Button */}
+                        {(currentUser.id === msg.authorId || isOwner) && (
+                          <button
+                            onClick={() => handleDeleteMessage(msg.id)}
+                            className="p-1.5 text-rose-500 hover:text-white hover:bg-rose-600 rounded transition"
+                            title="Delete Message"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          );
+        })()}
+
+        {/* Typing Indicators */}
+        {typingUsers.length > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-[#949ba4] px-1 select-none animate-pulse">
+            <div className="flex gap-0.5 items-center mr-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#949ba4] animate-bounce [animation-delay:-0.3s]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#949ba4] animate-bounce [animation-delay:-0.15s]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#949ba4] animate-bounce" />
+            </div>
+            <span>
+              {typingUsers.map((u) => u.username).join(", ")}{" "}
+              {typingUsers.length === 1 ? "is" : "are"} typing...
+            </span>
+          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -416,7 +742,20 @@ export default function ChatRoom({ channelId, currentUser, allUsers }: ChatRoomP
             ref={inputRef}
             type="text"
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={(e) => {
+              setInputText(e.target.value);
+              if (!isTypingSelf) {
+                setIsTypingSelf(true);
+                sendTypingBroadcast(true);
+              }
+              if (typingTimeoutRef.current) {
+                clearTimeout(typingTimeoutRef.current);
+              }
+              typingTimeoutRef.current = setTimeout(() => {
+                setIsTypingSelf(false);
+                sendTypingBroadcast(false);
+              }, 2000);
+            }}
             disabled={isRecording}
             placeholder={
               isRecording

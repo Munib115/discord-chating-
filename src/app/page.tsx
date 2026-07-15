@@ -4,7 +4,8 @@ import ChannelSidebar from "@/components/ChannelSidebar";
 import ChatRoom from "@/components/ChatRoom";
 import PostCard from "@/components/PostCard";
 import Link from "next/link";
-import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
+import Avatar from "@/components/Avatar";
+import MobileLayoutWrapper from "@/components/MobileLayoutWrapper";
 
 interface PageProps {
   searchParams: Promise<{
@@ -99,31 +100,62 @@ export default async function HomePage({ searchParams }: PageProps) {
   topUsers.sort((a, b) => (b._count.posts + b._count.comments) - (a._count.posts + a._count.comments));
 
   return (
-    <div className="flex flex-1 overflow-hidden min-w-0">
-      {/* 2. Channel Sidebar (Middle bar) - Renders homepage lobby system */}
-      <ChannelSidebar
-        channels={[]}
-        currentUser={currentUser}
-        allUsers={allUsers}
-      />
+    <MobileLayoutWrapper
+      channelSidebar={
+        <ChannelSidebar
+          channels={[]}
+          currentUser={currentUser}
+          allUsers={allUsers}
+        />
+      }
+      memberList={
+        <div className="flex flex-col gap-4">
+          {/* Welcome Card */}
+          <div className="bg-[#2b2d31] rounded-md border border-[#232428] p-4 text-center">
+            <span className="text-3xl">🏮</span>
+            <h3 className="text-base font-bold text-white mt-2">Welcome to OtakuDen!</h3>
+            <p className="text-xs text-[#949ba4] leading-relaxed mt-1">
+              Select a themed anime chamber from the leftmost bar, browse threads, and comment. Switch user profiles instantly in the bottom-left to play!
+            </p>
+          </div>
 
-      {/* 3. Main Chat / Feed Area (Right column) */}
-      <main className="flex-1 bg-[#313338] flex overflow-hidden min-w-0">
+          {/* Active Leaderboard */}
+          <div className="bg-[#2b2d31] rounded-md border border-[#232428] p-3 flex flex-col gap-2">
+            <h4 className="text-xs font-bold text-[#949ba4] uppercase tracking-wide px-1">
+              Top Active Otakus
+            </h4>
+            <div className="flex flex-col gap-2.5">
+              {topUsers.map((tu) => (
+                <div key={tu.id} className="flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Avatar avatar={tu.avatar} className="w-6 h-6 text-[10px]" />
+                    <span className="font-medium text-slate-200 truncate">{tu.username}</span>
+                  </div>
+                  <span className="text-[#949ba4] text-[10px] font-semibold uppercase bg-[#1e1f22] px-2 py-0.5 rounded">
+                    Score {tu._count.posts + tu._count.comments}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      }
+      channelName={currentTab.replace("-", " ")}
+      denName="OtakuDen Lobby"
+      denIcon="🏯"
+      isChatMode={currentTab === "dm"}
+      dens={dens}
+    >
+      <div className="flex-1 flex overflow-hidden min-w-0 h-full">
         {/* Render 1-on-1 Direct Message chat room */}
         {currentTab === "dm" && recipientUser ? (
-          <div className="flex-1 flex flex-col min-w-0 px-6 py-4 gap-4 overflow-hidden">
-            {/* Header bar */}
-            <header className="flex items-center justify-between pb-3 border-b border-[#232428] gap-4 select-none">
-              <div>
-                <h2 className="text-xl font-bold text-white flex items-center gap-1.5">
-                  <span className="text-[#80848e]">@</span>
-                  {recipientUser.username}
-                </h2>
-                <p className="text-xs text-[#949ba4] mt-0.5">
-                  {recipientUser.bio || "OtakuDen User profile chat session"}
-                </p>
-              </div>
-            </header>
+          <div className="flex-1 flex flex-col min-w-0 px-4 md:px-6 py-4 gap-4 overflow-hidden">
+            {/* Desktop header helper card */}
+            <div className="hidden md:block select-none pb-1 border-b border-[#232428]/40">
+              <p className="text-xs text-[#949ba4]">
+                {recipientUser.bio || "OtakuDen User profile chat session"}
+              </p>
+            </div>
 
             {/* Chat Room component targeting computed DM lobby channel */}
             {currentUser ? (
@@ -140,20 +172,14 @@ export default async function HomePage({ searchParams }: PageProps) {
           </div>
         ) : (
           /* Render global discussions list or explore directory */
-          <div className="flex-1 flex flex-col min-w-0 overflow-y-auto px-6 py-4 gap-4">
-            {/* Header Bar */}
-            <header className="flex items-center justify-between pb-3 border-b border-[#232428] gap-4">
-              <div>
-                <h2 className="text-xl font-bold text-white flex items-center gap-1.5 capitalize select-none">
-                  <span className="text-[#80848e]">#</span>
-                  {currentTab.replace("-", " ")}
-                </h2>
-                <p className="text-xs text-[#949ba4] mt-0.5 select-none">
-                  {currentTab === "all-discussions"
-                    ? "Viewing all discussions across the global sphere."
-                    : "Explore registered Dens and find your cozy anime home."}
-                </p>
-              </div>
+          <div className="flex-1 flex flex-col min-w-0 overflow-y-auto px-4 md:px-6 py-4 gap-4">
+            {/* Desktop header helper card */}
+            <div className="hidden md:block select-none pb-1 border-b border-[#232428]/40 flex items-center justify-between">
+              <p className="text-xs text-[#949ba4]">
+                {currentTab === "all-discussions"
+                  ? "Viewing all discussions across the global sphere."
+                  : "Explore registered Dens and find your cozy anime home."}
+              </p>
 
               {/* Search Input */}
               {currentTab === "all-discussions" && (
@@ -174,7 +200,7 @@ export default async function HomePage({ searchParams }: PageProps) {
                   </button>
                 </form>
               )}
-            </header>
+            </div>
 
             {/* Tab Contents */}
             {currentTab === "all-discussions" ? (
@@ -249,41 +275,7 @@ export default async function HomePage({ searchParams }: PageProps) {
             )}
           </div>
         )}
-
-        {/* Right Sidebar (Details Pane) */}
-        <aside className="w-64 border-l border-[#232428] bg-[#2b2d31]/30 hidden lg:flex flex-col p-4 gap-4 overflow-y-auto no-scrollbar select-none">
-          {/* Welcome Card */}
-          <div className="bg-[#2b2d31] rounded-md border border-[#232428] p-4 text-center">
-            <span className="text-3xl">🏮</span>
-            <h3 className="text-base font-bold text-white mt-2">Welcome to OtakuDen!</h3>
-            <p className="text-xs text-[#949ba4] leading-relaxed mt-1">
-              Select a themed anime chamber from the leftmost bar, browse threads, and comment. Switch user profiles instantly in the bottom-left to play!
-            </p>
-          </div>
-
-          {/* Active Leaderboard */}
-          <div className="bg-[#2b2d31] rounded-md border border-[#232428] p-3 flex flex-col gap-2">
-            <h4 className="text-xs font-bold text-[#949ba4] uppercase tracking-wide px-1">
-              Top Active Otakus
-            </h4>
-            <div className="flex flex-col gap-2.5">
-              {topUsers.map((tu) => (
-                <div key={tu.id} className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs flex-shrink-0 ${getAvatarBg(tu.avatar)}`}>
-                      {getAvatarEmoji(tu.avatar)}
-                    </span>
-                    <span className="font-medium text-slate-200 truncate">{tu.username}</span>
-                  </div>
-                  <span className="text-[#949ba4] text-[10px] font-semibold uppercase bg-[#1e1f22] px-2 py-0.5 rounded">
-                    Score {tu._count.posts + tu._count.comments}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-      </main>
-    </div>
+      </div>
+    </MobileLayoutWrapper>
   );
 }

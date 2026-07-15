@@ -3,6 +3,12 @@
 import { prisma } from "@/lib/db";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { createClient } from "@supabase/supabase-js";
+
+// Initialize Supabase Client dynamically from process env
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Custom Mock Session Manager
 export async function getLoggedInUser() {
@@ -17,9 +23,8 @@ export async function getLoggedInUser() {
     if (user) return user;
   }
 
-  // Fallback to first user in database if none is selected
-  const defaultUser = await prisma.user.findFirst();
-  return defaultUser;
+  // No cookie or invalid cookie — user must register
+  return null;
 }
 
 export async function getAllUsers() {
@@ -32,6 +37,54 @@ export async function switchUser(userId: number) {
   const cookieStore = await cookies();
   cookieStore.set("current_user_id", userId.toString(), { path: "/" });
   revalidatePath("/");
+}
+
+export async function registerNewUser(data: {
+  username: string;
+  avatar: string;
+}) {
+  const cleanUsername = data.username.trim();
+  if (!cleanUsername) throw new Error("Username cannot be empty");
+  if (cleanUsername.length < 2) throw new Error("Username must be at least 2 characters");
+  if (cleanUsername.length > 25) throw new Error("Username must be 25 characters or less");
+
+  // Check if username is already taken
+  const existing = await prisma.user.findUnique({
+    where: { username: cleanUsername },
+  });
+  if (existing) {
+    throw new Error("That username is already taken. Try another one!");
+  }
+
+  // Generate a unique 4-digit discriminator
+  let discriminator = String(Math.floor(1000 + Math.random() * 9000));
+  for (let i = 0; i < 10; i++) {
+    const discExists = await prisma.user.findFirst({
+      where: { username: cleanUsername, discriminator },
+    });
+    if (!discExists) break;
+    discriminator = String(Math.floor(1000 + Math.random() * 9000));
+  }
+
+  // Save avatar as is (preset keys, custom urls, or base64 data)
+  const avatar = data.avatar || "default";
+
+  // Create new user
+  const user = await prisma.user.create({
+    data: {
+      username: cleanUsername,
+      discriminator,
+      avatar,
+      bio: "",
+    },
+  });
+
+  // Set session cookie
+  const cookieStore = await cookies();
+  cookieStore.set("current_user_id", user.id.toString(), { path: "/" });
+
+  revalidatePath("/");
+  return user;
 }
 
 export async function createPost(formData: {
@@ -155,6 +208,8 @@ export async function createDen(formData: {
   const user = await getLoggedInUser();
   if (!user) throw new Error("Unauthorized");
 
+
+
   const slug = formData.name
     .toLowerCase()
     .trim()
@@ -201,6 +256,36 @@ export async function createDen(formData: {
     },
   });
 
+  // Save community creator tracking row + passcode to cloud Supabase
+  if (supabaseUrl && supabaseAnonKey && user.supabaseUid) {
+    try {
+      // 1. Insert into CommunityCreator
+      await supabase.from("CommunityCreator").insert([
+        {
+          denId: den.id,
+          denSlug: den.slug,
+          ownerId: user.id,
+          supabaseUid: user.supabaseUid,
+        }
+      ]);
+
+      // 2. Upsert into Den table so passcode is persisted in the cloud
+      await supabase.from("Den").upsert([
+        {
+          id: den.id,
+          name: den.name,
+          slug: den.slug,
+          description: den.description,
+          icon: den.icon,
+          ownerId: den.ownerId,
+          passcode: passcode,
+        }
+      ], { onConflict: "id" });
+    } catch (err) {
+      console.error("Failed to sync Den to Supabase:", err);
+    }
+  }
+
   revalidatePath("/");
   return den;
 }
@@ -208,12 +293,11 @@ export async function createDen(formData: {
 export async function createChannel(formData: {
   name: string;
   denId: number;
+  type?: string;
+  password?: string;
 }) {
-  const slug = formData.name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)+/g, "");
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
 
   const den = await prisma.den.findUnique({
     where: { id: formData.denId }
@@ -221,11 +305,24 @@ export async function createChannel(formData: {
 
   if (!den) throw new Error("Den not found");
 
+  // Verify that the current user is the owner (admin)
+  if (den.ownerId !== user.id) {
+    throw new Error("Only the Den creator (admin) can create channels.");
+  }
+
+  const slug = formData.name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+
   const channel = await prisma.channel.create({
     data: {
       name: formData.name.toLowerCase().trim().replace(/\s+/g, "-"),
       slug: slug,
+      type: formData.type || "TEXT",
       denId: formData.denId,
+      password: formData.password || null,
     },
   });
 
@@ -237,22 +334,46 @@ export async function joinDenWithPasscode(denId: number, passcode: string) {
   const user = await getLoggedInUser();
   if (!user) throw new Error("Unauthorized");
 
-  const den = await prisma.den.findUnique({
-    where: { id: denId },
-  });
+  // 1. Check local SQLite first
+  const den = await prisma.den.findUnique({ where: { id: denId } });
+  if (!den) throw new Error("Community not found.");
 
-  if (!den) throw new Error("Den not found");
+  const inputCode = passcode.trim();
+  let isValid = den.passcode === inputCode;
 
-  if (den.passcode !== passcode.trim()) {
-    throw new Error("Invalid passcode. Please try again.");
+  // 2. If local check fails, fallback to Supabase cloud Den table
+  if (!isValid && supabaseUrl && supabaseAnonKey) {
+    try {
+      const { data, error } = await supabase
+        .from("Den")
+        .select("passcode")
+        .eq("id", denId)
+        .single();
+
+      if (!error && data?.passcode) {
+        isValid = data.passcode === inputCode;
+        // Sync correct passcode back to local SQLite for future lookups
+        if (isValid) {
+          await prisma.den.update({
+            where: { id: denId },
+            data: { passcode: data.passcode },
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Supabase passcode fallback error:", err);
+    }
   }
 
-  // Create membership
-  await prisma.denMember.create({
-    data: {
-      denId: denId,
-      userId: user.id,
-    },
+  if (!isValid) {
+    throw new Error("Invalid passcode. Please ask the community admin for the correct code.");
+  }
+
+  // Create membership (upsert to avoid duplicate errors)
+  await prisma.denMember.upsert({
+    where: { denId_userId: { denId, userId: user.id } },
+    update: {},
+    create: { denId, userId: user.id },
   });
 
   revalidatePath(`/d/${den.slug}`);
@@ -291,6 +412,7 @@ export async function kickUserFromDen(denId: number, userId: number) {
 export async function updateUserProfile(formData: {
   username: string;
   bio: string;
+  avatar?: string;
 }) {
   const user = await getLoggedInUser();
   if (!user) throw new Error("Unauthorized");
@@ -315,9 +437,148 @@ export async function updateUserProfile(formData: {
     data: {
       username: cleanUsername,
       bio: cleanBio,
+      ...(formData.avatar !== undefined ? { avatar: formData.avatar } : {}),
     },
   });
 
   revalidatePath("/");
   return updatedUser;
 }
+
+export async function forwardMessageToDiscord(username: string, content: string, avatarEmoji?: string) {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  try {
+    const isAudio = content.startsWith("data:audio/");
+    const isImage = content.startsWith("img:");
+    let text = content;
+    if (isAudio) text = "🎙️ sent a voice note";
+    else if (isImage) text = `🖼️ sent an image: ${content.replace("img:", "")}`;
+
+    // Forward using the sender's username directly, removing the generic "OtakuDen Bot" persona
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content: text,
+        username: `${avatarEmoji ? avatarEmoji + " " : ""}${username}`,
+      }),
+    });
+  } catch (err) {
+    console.error("Error forwarding message to Discord webhook:", err);
+  }
+}
+
+export async function registerOrLinkSupabaseUser(data: {
+  email: string;
+  supabaseUid: string;
+}) {
+  // 1. Check if a user with this supabaseUid already exists
+  let user = await prisma.user.findUnique({
+    where: { supabaseUid: data.supabaseUid },
+  });
+
+  if (!user) {
+    // 2. Determine a unique username
+    let baseUsername = data.email.split("@")[0];
+    baseUsername = baseUsername.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!baseUsername) baseUsername = "Otaku";
+
+    let finalUsername = baseUsername;
+    while (true) {
+      const exists = await prisma.user.findUnique({
+        where: { username: finalUsername },
+      });
+      if (!exists) break;
+      finalUsername = `${baseUsername}_${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+
+    // 3. Generate a unique 4-digit discriminator (Discord-style #XXXX)
+    let discriminator = String(Math.floor(1000 + Math.random() * 9000));
+    // Retry if discriminator+username combo is already taken (edge case)
+    for (let i = 0; i < 10; i++) {
+      const discExists = await prisma.user.findFirst({
+        where: { username: finalUsername, discriminator },
+      });
+      if (!discExists) break;
+      discriminator = String(Math.floor(1000 + Math.random() * 9000));
+    }
+
+    // 4. Select a random avatar
+    const avatars = ["luffy", "zoro", "sailor", "goku", "deku", "default"];
+    const randomAvatar = avatars[Math.floor(Math.random() * avatars.length)];
+
+    // 5. Create the new user profile in SQLite
+    user = await prisma.user.create({
+      data: {
+        username: finalUsername,
+        discriminator,
+        avatar: randomAvatar,
+        email: data.email,
+        supabaseUid: data.supabaseUid,
+        bio: "New member joined!",
+      },
+    });
+  }
+
+  // 5. Update session cookie
+  const cookieStore = await cookies();
+  cookieStore.set("current_user_id", user.id.toString(), { path: "/" });
+
+  revalidatePath("/");
+  return user;
+}
+
+export async function disconnectSupabaseUser(userId: number) {
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      email: null,
+      supabaseUid: null,
+    },
+  });
+  revalidatePath("/");
+  return updatedUser;
+}
+
+export async function joinChannel(channelId: number, passwordInput?: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const channel = await prisma.channel.findUnique({
+    where: { id: channelId },
+    include: { den: true },
+  });
+
+  if (!channel) throw new Error("Channel not found");
+
+  // Check if password is correct (if password is set)
+  if (channel.password && channel.password.trim() !== "") {
+    if (!passwordInput || passwordInput.trim() !== channel.password.trim()) {
+      throw new Error("Incorrect channel password!");
+    }
+  }
+
+  const member = await prisma.channelMember.upsert({
+    where: {
+      channelId_userId: {
+        channelId,
+        userId: user.id,
+      },
+    },
+    update: {},
+    create: {
+      channelId,
+      userId: user.id,
+    },
+  });
+
+  revalidatePath(`/d/${channel.den.slug}/${channel.slug}`);
+  revalidatePath(`/d/${channel.den.slug}`);
+
+  return member;
+}
+

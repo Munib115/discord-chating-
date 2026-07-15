@@ -180,19 +180,7 @@ export default function DenSidebar({ dens }: DenSidebarProps) {
                   />
                 </div>
 
-                <div>
-                  <label htmlFor="den-passcode" className="block text-[#b5bac1] uppercase text-xs font-bold mb-2">Den Invite Passcode</label>
-                  <input
-                    id="den-passcode"
-                    type="text"
-                    required
-                    maxLength={10}
-                    value={passcode}
-                    onChange={(e) => setPasscode(e.target.value)}
-                    placeholder="e.g. 1234"
-                    className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-white focus:outline-none focus:border-indigo-500 transition"
-                  />
-                </div>
+
 
                 <div className="flex justify-end gap-3 mt-4 bg-[#2b2d31] -mx-6 -mb-6 p-4 border-t border-[#232428]">
                   <button

@@ -1,17 +1,23 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { createChannel, switchUser } from "@/app/actions";
-import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
+import { createChannel } from "@/app/actions";
+import Avatar from "./Avatar";
 import SettingsModal from "./SettingsModal";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 interface User {
   id: number;
   username: string;
   avatar: string;
   bio: string | null;
+  createdAt?: string | Date;
 }
 
 interface Channel {
@@ -19,6 +25,7 @@ interface Channel {
   name: string;
   slug: string;
   type?: string; // "TEXT" or "VOICE"
+  password?: string | null;
 }
 
 interface Den {
@@ -29,6 +36,7 @@ interface Den {
   banner?: string | null;
   icon?: string | null;
   createdAt?: string | Date;
+  ownerId?: number | null;
 }
 
 interface ChannelSidebarProps {
@@ -56,7 +64,8 @@ export default function ChannelSidebar({
   const [isAddChannelOpen, setIsAddChannelOpen] = useState(false);
   const [channelName, setChannelName] = useState("");
   const [channelType, setChannelType] = useState("TEXT");
-  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [channelPassword, setChannelPassword] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -76,9 +85,13 @@ export default function ChannelSidebar({
       const newChannel = await createChannel({
         name: channelName,
         denId: currentDen.id,
+        type: channelType,
+        password: isPrivate ? channelPassword : "",
       });
       setIsAddChannelOpen(false);
       setChannelName("");
+      setChannelPassword("");
+      setIsPrivate(false);
       router.push(`/d/${currentDen.slug}/${newChannel.slug}`);
     } catch (err) {
       console.error(err);
@@ -87,13 +100,154 @@ export default function ChannelSidebar({
     }
   };
 
-  const handleSwitchUser = async (userId: number) => {
-    await switchUser(userId);
-    setIsUserMenuOpen(false);
+
+
+  // WebRTC & Supabase voice signaling refs
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionsRef = useRef<Record<number, RTCPeerConnection>>({});
+  const presenceChannelRef = useRef<any>(null);
+  const signalingChannelRef = useRef<any>(null);
+
+  // Helper to disconnect voice
+  const disconnectVoice = () => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    Object.keys(peerConnectionsRef.current).forEach((peerId) => {
+      const pc = peerConnectionsRef.current[Number(peerId)];
+      if (pc) pc.close();
+      const audio = document.getElementById(`audio-peer-${peerId}`);
+      if (audio) audio.remove();
+    });
+    peerConnectionsRef.current = {};
+
+    if (presenceChannelRef.current) {
+      presenceChannelRef.current.unsubscribe();
+      supabase.removeChannel(presenceChannelRef.current);
+      presenceChannelRef.current = null;
+    }
+    if (signalingChannelRef.current) {
+      signalingChannelRef.current.unsubscribe();
+      supabase.removeChannel(signalingChannelRef.current);
+      signalingChannelRef.current = null;
+    }
   };
 
-  const handleVoiceChannelClick = (channelName: string) => {
+  // Clean up on unmount
+  useEffect(() => {
+    return () => {
+      disconnectVoice();
+    };
+  }, []);
+
+  // Synchronize local mute state to mic tracks
+  useEffect(() => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getAudioTracks().forEach((track) => {
+        track.enabled = !isMuted;
+      });
+    }
+    if (presenceChannelRef.current && currentUser) {
+      presenceChannelRef.current.track({
+        id: currentUser.id,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        isMuted,
+        isDeafened,
+      });
+    }
+  }, [isMuted, currentUser]);
+
+  // Synchronize local deafen state to remote audios
+  useEffect(() => {
+    Object.keys(peerConnectionsRef.current).forEach((peerId) => {
+      const audio = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
+      if (audio) {
+        audio.muted = isDeafened;
+      }
+    });
+    if (presenceChannelRef.current && currentUser) {
+      presenceChannelRef.current.track({
+        id: currentUser.id,
+        username: currentUser.username,
+        avatar: currentUser.avatar,
+        isMuted,
+        isDeafened,
+      });
+    }
+  }, [isDeafened, currentUser]);
+
+  // Local microphone volume analysis for real speaking indicators
+  useEffect(() => {
+    if (!activeVoiceChannel || isMuted || !localStreamRef.current || !currentUser) {
+      return;
+    }
+
+    let audioContext: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let microphone: MediaStreamAudioSourceNode | null = null;
+    let javascriptNode: ScriptProcessorNode | null = null;
+
+    try {
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      analyser = audioContext.createAnalyser();
+      microphone = audioContext.createMediaStreamSource(localStreamRef.current);
+      javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+
+      analyser.smoothingTimeConstant = 0.8;
+      analyser.fftSize = 1024;
+
+      microphone.connect(analyser);
+      analyser.connect(javascriptNode);
+      javascriptNode.connect(audioContext.destination);
+
+      let wasSpeaking = false;
+
+      javascriptNode.onaudioprocess = () => {
+        if (!analyser) return;
+        const array = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(array);
+        let values = 0;
+
+        const length = array.length;
+        for (let i = 0; i < length; i++) {
+          values += array[i];
+        }
+
+        const average = values / length;
+        const isSpeaking = average > 12; // voice volume threshold
+
+        if (isSpeaking !== wasSpeaking && signalingChannelRef.current) {
+          wasSpeaking = isSpeaking;
+          signalingChannelRef.current.send({
+            type: "broadcast",
+            event: "speaking",
+            payload: {
+              userId: currentUser.id,
+              speaking: isSpeaking,
+            },
+          });
+          setSpeakers((prev) => ({ ...prev, [currentUser.id]: isSpeaking }));
+        }
+      };
+    } catch (e) {
+      console.error("Audio analyser creation failed:", e);
+    }
+
+    return () => {
+      if (javascriptNode) javascriptNode.disconnect();
+      if (microphone) microphone.disconnect();
+      if (audioContext) audioContext.close();
+    };
+  }, [activeVoiceChannel, isMuted, currentUser]);
+
+  const handleVoiceChannelClick = async (channelName: string) => {
     if (activeVoiceChannel === channelName) return; // already in it
+    if (!currentUser || !currentDen) return;
+
+    disconnectVoice();
 
     // Play connect audio tone
     try {
@@ -122,10 +276,208 @@ export default function ChannelSidebar({
 
     setActiveVoiceChannel(channelName);
 
-    // Pick 2 random peers from registered users to join the VC call
-    if (currentUser) {
-      const candidates = allUsers.filter((u) => u.id !== currentUser.id);
-      setConnectedUsers(candidates.slice(0, 2));
+    try {
+      // 1. Get user mic media stream
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !isMuted;
+      });
+
+      const voiceRoomId = `${currentDen.id}-${channelName.toLowerCase().replace(/\s+/g, "-")}`;
+      const sigName = `voice-sig-${voiceRoomId}`;
+      const presName = `voice-pres-${voiceRoomId}`;
+
+      // Clean up duplicate cached channels from Supabase internal dictionary
+      const existingSig = supabase.getChannels().find(
+        (c) => c.topic === `realtime:${sigName}` || c.topic === sigName
+      );
+      if (existingSig) {
+        supabase.removeChannel(existingSig);
+      }
+      const existingPres = supabase.getChannels().find(
+        (c) => c.topic === `realtime:${presName}` || c.topic === presName
+      );
+      if (existingPres) {
+        supabase.removeChannel(existingPres);
+      }
+      if ((supabase as any).realtime) {
+        (supabase as any).realtime.channels = (supabase as any).realtime.channels.filter(
+          (c: any) => c.topic !== `realtime:${sigName}` && c.topic !== sigName &&
+                      c.topic !== `realtime:${presName}` && c.topic !== presName
+        );
+      }
+
+      // 2. Setup signaling Broadcast channel on Supabase
+      const signalingChannel = supabase.channel(sigName);
+      signalingChannelRef.current = signalingChannel;
+
+      signalingChannel.on("broadcast", { event: "signal" }, async ({ payload }: any) => {
+        const { from, to, signal } = payload;
+        if (to !== currentUser.id) return;
+
+        let pc = peerConnectionsRef.current[from];
+
+        if (signal.type === "offer") {
+          if (!pc) {
+            pc = createPeerConnection(from, false);
+          }
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          signalingChannel.send({
+            type: "broadcast",
+            event: "signal",
+            payload: {
+              from: currentUser.id,
+              to: from,
+              signal: {
+                type: "answer",
+                sdp: answer,
+              },
+            },
+          });
+        } else if (signal.type === "answer") {
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          }
+        } else if (signal.type === "candidate") {
+          if (pc) {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          }
+        }
+      });
+
+      // Handle speaking updates from other peers
+      signalingChannel.on("broadcast", { event: "speaking" }, ({ payload }: any) => {
+        setSpeakers((prev) => ({ ...prev, [payload.userId]: payload.speaking }));
+      });
+
+      await signalingChannel.subscribe();
+
+      // 3. Helper to create peer connections
+      const createPeerConnection = (peerId: number, isInitiator: boolean) => {
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+          ],
+        });
+
+        peerConnectionsRef.current[peerId] = pc;
+
+        // Add local tracks
+        stream.getTracks().forEach((track) => {
+          pc.addTrack(track, stream);
+        });
+
+        // Broadcast ICE candidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate && signalingChannelRef.current) {
+            signalingChannelRef.current.send({
+              type: "broadcast",
+              event: "signal",
+              payload: {
+                from: currentUser.id,
+                to: peerId,
+                signal: {
+                  type: "candidate",
+                  candidate: event.candidate,
+                },
+              },
+            });
+          }
+        };
+
+        // Render remote track
+        pc.ontrack = (event) => {
+          const remoteStream = event.streams[0];
+          let audio = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
+          if (!audio) {
+            audio = document.createElement("audio");
+            audio.id = `audio-peer-${peerId}`;
+            audio.autoplay = true;
+            document.body.appendChild(audio);
+          }
+          audio.srcObject = remoteStream;
+          audio.muted = isDeafened;
+        };
+
+        return pc;
+      };
+
+      // 4. Join Presence voice room
+      const presenceChannel = supabase.channel(presName, {
+        config: { presence: { key: currentUser.id.toString() } },
+      });
+      presenceChannelRef.current = presenceChannel;
+
+      presenceChannel.on("presence", { event: "sync" }, () => {
+        const state = presenceChannel.presenceState();
+        const users: User[] = [];
+        const activePeers: any[] = [];
+
+        Object.values(state).forEach((presenceList: any) => {
+          presenceList.forEach((presence: any) => {
+            if (presence.id !== currentUser.id) {
+              users.push({
+                id: presence.id,
+                username: presence.username,
+                avatar: presence.avatar,
+                bio: presence.bio || "",
+              });
+              activePeers.push(presence);
+            }
+          });
+        });
+
+        setConnectedUsers(users);
+
+        // Initiator calls receiver
+        activePeers.forEach((peer) => {
+          if (!peerConnectionsRef.current[peer.id]) {
+            if (currentUser.id < peer.id) {
+              const pc = createPeerConnection(peer.id, true);
+              pc.createOffer().then(async (offer) => {
+                await pc.setLocalDescription(offer);
+                if (signalingChannelRef.current) {
+                  signalingChannelRef.current.send({
+                    type: "broadcast",
+                    event: "signal",
+                    payload: {
+                      from: currentUser.id,
+                      to: peer.id,
+                      signal: {
+                        type: "offer",
+                        sdp: offer,
+                      },
+                    },
+                  });
+                }
+              });
+            }
+          }
+        });
+      });
+
+      await presenceChannel.subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await presenceChannel.track({
+            id: currentUser.id,
+            username: currentUser.username,
+            avatar: currentUser.avatar,
+            isMuted,
+            isDeafened,
+          });
+        }
+      });
+
+    } catch (err) {
+      console.error("Microphone access or voice initialization failed:", err);
+      alert("Voice connection failed: Make sure mic access is allowed in your browser settings.");
+      setActiveVoiceChannel(null);
     }
   };
 
@@ -150,33 +502,11 @@ export default function ChannelSidebar({
       osc.stop(ctx.currentTime + 0.3);
     } catch (e) {}
 
+    disconnectVoice();
     setActiveVoiceChannel(null);
     setConnectedUsers([]);
     setSpeakers({});
   };
-
-  // Dynamic speaking indicators loop
-  useEffect(() => {
-    if (!activeVoiceChannel) {
-      setSpeakers({});
-      return;
-    }
-
-    const interval = setInterval(() => {
-      const talkMap: Record<number, boolean> = {};
-      if (currentUser && !isMuted && Math.random() > 0.45) {
-        talkMap[currentUser.id] = Math.random() > 0.5;
-      }
-      connectedUsers.forEach((u) => {
-        if (!isDeafened && Math.random() > 0.6) {
-          talkMap[u.id] = Math.random() > 0.5;
-        }
-      });
-      setSpeakers(talkMap);
-    }, 1500);
-
-    return () => clearInterval(interval);
-  }, [activeVoiceChannel, connectedUsers, currentUser, isMuted, isDeafened]);
 
   const textChannels = channels.filter((c) => c.type !== "VOICE");
   const voiceChannels = channels.filter((c) => c.type === "VOICE");
@@ -198,18 +528,20 @@ export default function ChannelSidebar({
             <div>
               <div className="flex items-center justify-between text-[#949ba4] text-[12px] font-bold tracking-wide uppercase px-2 mb-1">
                 <span>Text Channels</span>
-                <button
-                  onClick={() => {
-                    setChannelType("TEXT");
-                    setIsAddChannelOpen(true);
-                  }}
-                  className="hover:text-white transition"
-                  title="Create Text Channel"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+                {currentUser && currentDen && currentDen.ownerId === currentUser.id && (
+                  <button
+                    onClick={() => {
+                      setChannelType("TEXT");
+                      setIsAddChannelOpen(true);
+                    }}
+                    className="hover:text-white transition"
+                    title="Create Text Channel"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
+                    </svg>
+                  </button>
+                )}
               </div>
 
               <div className="flex flex-col gap-[2px]">
@@ -225,7 +557,12 @@ export default function ChannelSidebar({
                         }`}
                       >
                         <span className="text-xl text-[#80848e]">#</span>
-                        <span className="truncate">{chan.name}</span>
+                        <div className="flex items-center justify-between w-full min-w-0">
+                          <span className="truncate">{chan.name}</span>
+                          {chan.password && (
+                            <span className="text-xs text-[#949ba4] ml-1 select-none" title="Password Protected Private Channel">🔒</span>
+                          )}
+                        </div>
                       </div>
                     </Link>
                   );
@@ -237,18 +574,20 @@ export default function ChannelSidebar({
             <div>
               <div className="flex items-center justify-between text-[#949ba4] text-[12px] font-bold tracking-wide uppercase px-2 mb-1">
                 <span>Voice Channels</span>
-                <button
-                  onClick={() => {
-                    setChannelType("VOICE");
-                    setIsAddChannelOpen(true);
-                  }}
-                  className="hover:text-white transition"
-                  title="Create Voice Channel"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+                {currentUser && currentDen && currentDen.ownerId === currentUser.id && (
+                  <button
+                    onClick={() => {
+                      setChannelType("VOICE");
+                      setIsAddChannelOpen(true);
+                    }}
+                    className="hover:text-white transition"
+                    title="Create Voice Channel"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
+                    </svg>
+                  </button>
+                )}
               </div>
 
               <div className="flex flex-col gap-[2px]">
@@ -267,7 +606,12 @@ export default function ChannelSidebar({
                         <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                         </svg>
-                        <span className="truncate flex-1">{chan.name}</span>
+                        <div className="flex items-center justify-between w-full min-w-0 flex-1">
+                          <span className="truncate">{chan.name}</span>
+                          {chan.password && (
+                            <span className="text-xs text-[#949ba4] ml-1 select-none" title="Password Protected Private Channel">🔒</span>
+                          )}
+                        </div>
                       </button>
 
                       {/* Display connected speakers underneath */}
@@ -275,15 +619,14 @@ export default function ChannelSidebar({
                         <div className="flex flex-col gap-1 ml-6 mt-1 mb-2">
                           {/* 1. Self */}
                           <div className="flex items-center gap-1.5 text-xs py-0.5 select-none">
-                            <span
-                              className={`w-4 h-4 rounded-full border flex items-center justify-center text-[10px] flex-shrink-0 transition-all ${
+                            <Avatar
+                              avatar={currentUser.avatar}
+                              className={`w-4 h-4 text-[9px] transition-all ${
                                 speakers[currentUser.id]
                                   ? "border-emerald-500 ring-2 ring-emerald-500/20 scale-105"
                                   : "border-transparent"
-                              } ${getAvatarBg(currentUser.avatar)}`}
-                            >
-                              {getAvatarEmoji(currentUser.avatar)}
-                            </span>
+                              }`}
+                            />
                             <span className={`truncate ${speakers[currentUser.id] ? "text-emerald-400 font-bold" : "text-slate-300"}`}>
                               {currentUser.username}
                             </span>
@@ -292,15 +635,14 @@ export default function ChannelSidebar({
                           {/* 2. Simulated call peers */}
                           {connectedUsers.map((u) => (
                             <div key={u.id} className="flex items-center gap-1.5 text-xs py-0.5 select-none">
-                              <span
-                                className={`w-4 h-4 rounded-full border flex items-center justify-center text-[10px] flex-shrink-0 transition-all ${
+                              <Avatar
+                                avatar={u.avatar}
+                                className={`w-4 h-4 text-[9px] transition-all ${
                                   speakers[u.id]
                                     ? "border-emerald-500 ring-2 ring-emerald-500/20 scale-105"
                                     : "border-transparent"
-                                } ${getAvatarBg(u.avatar)}`}
-                              >
-                                {getAvatarEmoji(u.avatar)}
-                              </span>
+                                }`}
+                              />
                               <span className={`truncate ${speakers[u.id] ? "text-emerald-400 font-bold" : "text-slate-400"}`}>
                                 {u.username}
                               </span>
@@ -376,9 +718,7 @@ export default function ChannelSidebar({
                               ? "bg-[#35373c] text-white font-medium"
                               : "text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]"
                           }`}>
-                            <span className={`w-5 h-5 rounded-full border flex items-center justify-center text-[10px] flex-shrink-0 ${getAvatarBg(u.avatar)}`}>
-                              {getAvatarEmoji(u.avatar)}
-                            </span>
+                            <Avatar avatar={u.avatar} className="w-5 h-5 text-[9px]" />
                             <span className="truncate">{u.username}</span>
                           </div>
                         </Link>
@@ -437,72 +777,62 @@ export default function ChannelSidebar({
         </div>
       )}
 
-      {/* User Status Bar at the bottom */}
-      <div className="h-[52px] bg-[#232428] flex items-center justify-between px-2 relative select-none">
-        <button
-          onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
-          className="flex items-center gap-2 hover:bg-[#35373c] p-1.5 rounded-md cursor-pointer transition text-left flex-1 min-w-0 mr-1"
-        >
-          <div
-            className={`w-8 h-8 rounded-full border flex items-center justify-center text-base font-bold flex-shrink-0 ${
-              currentUser ? getAvatarBg(currentUser.avatar) : "bg-indigo-600/20 text-white"
-            }`}
-          >
-            {currentUser ? getAvatarEmoji(currentUser.avatar) : "👤"}
+      {/* Discord-exact User Status Bar */}
+      <div className="h-[52px] bg-[#232428] flex items-center px-2 gap-1 relative select-none flex-shrink-0">
+        {/* Avatar + name (your identity) */}
+        <div className="flex items-center gap-2 px-1.5 py-1 rounded-md flex-1 min-w-0">
+          <div className="relative flex-shrink-0">
+            <Avatar avatar={currentUser ? currentUser.avatar : "default"} className="w-8 h-8 text-[12px] bg-[#2b2d31]" />
+            {currentUser && (
+              <span className="absolute -bottom-px -right-px w-3 h-3 rounded-full border-2 border-[#232428] bg-[#23a55a]" />
+            )}
           </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-sm font-semibold text-white truncate leading-snug">
-              {currentUser ? currentUser.username : "Guest User"}
+          <div className="flex flex-col min-w-0 leading-tight">
+            <span className="text-[13px] font-semibold text-white truncate leading-snug">
+              {currentUser ? currentUser.username : "Guest"}
             </span>
-            <span className="text-[10px] text-[#949ba4] leading-tight truncate">
-              {currentUser?.bio || "Switch Identity..."}
+            <span className="text-[11px] text-[#949ba4] truncate">
+              {currentUser
+                ? (currentUser as any).discriminator
+                  ? `#${(currentUser as any).discriminator}`
+                  : "Online"
+                : "Not registered"}
             </span>
           </div>
-        </button>
+        </div>
 
-        {/* Settings Gear icon right next to profile switcher */}
-        {currentUser && (
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition flex-shrink-0"
-            title="User Settings"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        {/* Mic / Deafen / Settings icon buttons */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          {/* Mute */}
+          <button className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition" title="Mute">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
             </svg>
           </button>
-        )}
+          {/* Deafen */}
+          <button className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition" title="Deafen">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+            </svg>
+          </button>
+          {/* Settings */}
+          {currentUser && (
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-1.5 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition"
+              title="User Settings"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          )}
+        </div>
 
-        {/* Dynamic User Selector Menu */}
-        {isUserMenuOpen && (
-          <div className="absolute bottom-[60px] left-2 right-2 bg-[#111214] border border-[#232428] rounded-md shadow-2xl z-50 p-2 text-white animate-in slide-in-from-bottom-2 duration-100">
-            <div className="text-[11px] font-bold text-[#949ba4] uppercase px-2 py-1 border-b border-[#232428] mb-1">
-              Select Character Profile
-            </div>
-            <div className="flex flex-col gap-[2px] max-h-48 overflow-y-auto">
-              {allUsers.map((u) => (
-                <button
-                  key={u.id}
-                  onClick={() => handleSwitchUser(u.id)}
-                  className={`flex items-center gap-2 w-full text-left p-1.5 rounded hover:bg-indigo-600 transition ${
-                    currentUser?.id === u.id ? "bg-[#35373c]" : ""
-                  }`}
-                >
-                  <span
-                    className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs ${getAvatarBg(
-                      u.avatar
-                    )}`}
-                  >
-                    {getAvatarEmoji(u.avatar)}
-                  </span>
-                  <span className="text-xs font-semibold truncate flex-1">{u.username}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
+
+
 
       {/* Add Channel Modal */}
       {isAddChannelOpen && currentDen && (
@@ -529,6 +859,70 @@ export default function ChannelSidebar({
                   />
                 </div>
               </div>
+
+              {/* Channel Type */}
+              <div className="mb-4">
+                <label className="block text-[#b5bac1] uppercase text-xs font-bold mb-2">Channel Type</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setChannelType("TEXT")}
+                    className={`flex-1 py-2 px-3 rounded border text-xs font-semibold flex items-center justify-center gap-1.5 transition select-none ${
+                      channelType === "TEXT"
+                        ? "bg-indigo-600/20 border-indigo-500 text-indigo-400"
+                        : "bg-[#1e1f22] border-[#111214] text-[#949ba4] hover:bg-[#2b2d31]"
+                    }`}
+                  >
+                    <span>💬</span> Text
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChannelType("VOICE")}
+                    className={`flex-1 py-2 px-3 rounded border text-xs font-semibold flex items-center justify-center gap-1.5 transition select-none ${
+                      channelType === "VOICE"
+                        ? "bg-indigo-600/20 border-indigo-500 text-indigo-400"
+                        : "bg-[#1e1f22] border-[#111214] text-[#949ba4] hover:bg-[#2b2d31]"
+                    }`}
+                  >
+                    <span>🔊</span> Voice
+                  </button>
+                </div>
+              </div>
+
+              {/* Private Channel Toggle */}
+              <div className="mb-4 flex items-center justify-between bg-[#1e1f22] border border-[#111214] rounded p-3 select-none">
+                <div className="flex flex-col gap-0.5 text-left">
+                  <span className="text-xs font-bold text-white flex items-center gap-1">
+                    🔒 Private Channel
+                  </span>
+                  <span className="text-[10px] text-[#949ba4]">Only members with the password can enter.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={isPrivate}
+                  onChange={(e) => {
+                    setIsPrivate(e.target.checked);
+                    if (!e.target.checked) setChannelPassword("");
+                  }}
+                  className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 bg-[#313338]"
+                />
+              </div>
+
+              {/* Password field */}
+              {isPrivate && (
+                <div className="mb-4 animate-in slide-in-from-top-2 duration-200">
+                  <label className="block text-[#b5bac1] uppercase text-xs font-bold mb-2">Channel Password</label>
+                  <input
+                    type="password"
+                    required
+                    maxLength={30}
+                    value={channelPassword}
+                    onChange={(e) => setChannelPassword(e.target.value)}
+                    placeholder="Enter private channel passcode"
+                    className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2 text-white text-xs focus:outline-none focus:border-indigo-500 transition"
+                  />
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 mt-6 bg-[#2b2d31] -mx-6 -mb-6 p-4 border-t border-[#232428]">
                 <button

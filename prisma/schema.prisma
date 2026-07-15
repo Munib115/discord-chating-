@@ -10,16 +10,20 @@ datasource db {
 }
 
 model User {
-  id         Int         @id @default(autoincrement())
-  username   String      @unique
-  avatar     String      // Path or avatar slug
-  bio        String?
-  createdAt  DateTime    @default(now())
-  posts      Post[]
-  comments   Comment[]
-  votes      Vote[]
-  ownedDens  Den[]       @relation("DenOwner")
-  joinedDens DenMember[]
+  id            Int         @id @default(autoincrement())
+  username      String      @unique
+  discriminator String      @default("0000") // Discord-style 4-digit tag e.g. #4821
+  avatar        String      // Path or avatar slug
+  bio           String?
+  email         String?     @unique
+  supabaseUid   String?     @unique
+  createdAt     DateTime    @default(now())
+  posts         Post[]
+  comments      Comment[]
+  votes         Vote[]
+  ownedDens     Den[]       @relation("DenOwner")
+  joinedDens    DenMember[]
+  joinedChannels ChannelMember[]
 }
 
 model Den {
@@ -54,10 +58,13 @@ model Channel {
   name      String
   slug      String
   type      String   @default("TEXT") // "TEXT" or "VOICE"
+  password  String?  // Optional password to join/lock private channels
   denId     Int
   den       Den      @relation(fields: [denId], references: [id], onDelete: Cascade)
   posts     Post[]
   createdAt DateTime @default(now())
+
+  members   ChannelMember[]
 
   @@unique([denId, slug])
 }
@@ -102,4 +109,15 @@ model Vote {
   post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
+}
+
+model ChannelMember {
+  id        Int      @id @default(autoincrement())
+  channelId Int
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime @default(now())
+
+  @@unique([channelId, userId])
 }
