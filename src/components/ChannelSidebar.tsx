@@ -110,6 +110,17 @@ export default function ChannelSidebar({
 
   // Helper to disconnect voice
   const disconnectVoice = () => {
+    // Broadcast leave message before disconnecting
+    if (signalingChannelRef.current && currentUser) {
+      try {
+        signalingChannelRef.current.send({
+          type: "broadcast",
+          event: "leave",
+          payload: { userId: currentUser.id },
+        });
+      } catch (e) {}
+    }
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
@@ -243,11 +254,22 @@ export default function ChannelSidebar({
     };
   }, [activeVoiceChannel, isMuted, currentUser]);
 
+  // Ref to hold a heartbeat interval so we can clear it
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref to track known peers with timestamps for timeout detection
+  const knownPeersRef = useRef<Record<number, { user: User; lastSeen: number }>>({});
+
   const handleVoiceChannelClick = async (channelName: string) => {
     if (activeVoiceChannel === channelName) return; // already in it
     if (!currentUser || !currentDen) return;
 
     disconnectVoice();
+    // Clear any previous heartbeat
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    knownPeersRef.current = {};
 
     // Play connect audio tone
     try {
@@ -285,32 +307,23 @@ export default function ChannelSidebar({
       });
 
       const voiceRoomId = `${currentDen.id}-${channelName.toLowerCase().replace(/\s+/g, "-")}`;
-      const sigName = `voice-sig-${voiceRoomId}`;
-      const presName = `voice-pres-${voiceRoomId}`;
+      const chanName = `voice-room-${voiceRoomId}`;
 
-      // Clean up duplicate cached channels from Supabase internal dictionary
-      const existingSig = supabase.getChannels().find(
-        (c) => c.topic === `realtime:${sigName}` || c.topic === sigName
+      // Clean up any existing channel with this name
+      const existing = supabase.getChannels().find(
+        (c) => c.topic === `realtime:${chanName}` || c.topic === chanName
       );
-      if (existingSig) {
-        supabase.removeChannel(existingSig);
-      }
-      const existingPres = supabase.getChannels().find(
-        (c) => c.topic === `realtime:${presName}` || c.topic === presName
-      );
-      if (existingPres) {
-        supabase.removeChannel(existingPres);
+      if (existing) {
+        supabase.removeChannel(existing);
       }
       if ((supabase as any).realtime) {
         (supabase as any).realtime.channels = (supabase as any).realtime.channels.filter(
-          (c: any) => c.topic !== `realtime:${sigName}` && c.topic !== sigName &&
-                      c.topic !== `realtime:${presName}` && c.topic !== presName
+          (c: any) => c.topic !== `realtime:${chanName}` && c.topic !== chanName
         );
       }
 
-      // 2. Helper to create peer connections — DEFINED FIRST so signal handler can reference it
+      // 2. Helper to create peer connections — defined first
       const createPeerConnection = (peerId: number) => {
-        // Don't create duplicate connections
         if (peerConnectionsRef.current[peerId]) {
           return peerConnectionsRef.current[peerId];
         }
@@ -327,12 +340,12 @@ export default function ChannelSidebar({
 
         peerConnectionsRef.current[peerId] = pc;
 
-        // Add local audio tracks to the connection
+        // Add local audio tracks
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
         });
 
-        // Broadcast ICE candidates to the remote peer
+        // Send ICE candidates to the remote peer
         pc.onicecandidate = (event) => {
           if (event.candidate && signalingChannelRef.current) {
             signalingChannelRef.current.send({
@@ -341,16 +354,13 @@ export default function ChannelSidebar({
               payload: {
                 from: currentUser.id,
                 to: peerId,
-                signal: {
-                  type: "candidate",
-                  candidate: event.candidate,
-                },
+                signal: { type: "candidate", candidate: event.candidate },
               },
             });
           }
         };
 
-        // When remote peer sends audio, render it
+        // When remote audio track arrives, play it
         pc.ontrack = (event) => {
           const remoteStream = event.streams[0];
           if (!remoteStream) return;
@@ -365,17 +375,12 @@ export default function ChannelSidebar({
           }
           audio.srcObject = remoteStream;
           audio.muted = isDeafened;
-          // Explicitly play to handle Chrome autoplay policy
-          audio.play().catch((err) => {
-            console.warn("Audio autoplay blocked, will retry on user interaction:", err);
-          });
+          audio.play().catch(() => {});
         };
 
-        // Log connection state for debugging
         pc.oniceconnectionstatechange = () => {
           console.log(`[Voice] ICE state with peer ${peerId}: ${pc.iceConnectionState}`);
           if (pc.iceConnectionState === "failed") {
-            console.warn(`[Voice] ICE failed for peer ${peerId}, restarting ICE...`);
             pc.restartIce();
           }
         };
@@ -383,17 +388,40 @@ export default function ChannelSidebar({
         return pc;
       };
 
-      // 3. Setup signaling Broadcast channel on Supabase
-      const signalingChannel = supabase.channel(sigName);
-      signalingChannelRef.current = signalingChannel;
+      // Helper to initiate a WebRTC offer to a peer
+      const sendOfferTo = async (peerId: number) => {
+        if (peerConnectionsRef.current[peerId]) {
+          peerConnectionsRef.current[peerId].close();
+          delete peerConnectionsRef.current[peerId];
+        }
+        const pc = createPeerConnection(peerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        if (signalingChannelRef.current) {
+          signalingChannelRef.current.send({
+            type: "broadcast",
+            event: "signal",
+            payload: {
+              from: currentUser.id,
+              to: peerId,
+              signal: { type: "offer", sdp: offer },
+            },
+          });
+        }
+      };
 
-      signalingChannel.on("broadcast", { event: "signal" }, async ({ payload }: any) => {
+      // 3. Setup a SINGLE broadcast channel for everything (signaling + peer discovery)
+      const voiceChannel = supabase.channel(chanName);
+      signalingChannelRef.current = voiceChannel;
+      // We no longer use a separate presence channel
+      presenceChannelRef.current = null;
+
+      // Handle WebRTC signaling messages
+      voiceChannel.on("broadcast", { event: "signal" }, async ({ payload }: any) => {
         const { from, to, signal } = payload;
         if (to !== currentUser.id) return;
 
         if (signal.type === "offer") {
-          // Always create a fresh connection for incoming offers
-          // (close existing one if present to handle re-offers)
           if (peerConnectionsRef.current[from]) {
             peerConnectionsRef.current[from].close();
             delete peerConnectionsRef.current[from];
@@ -403,16 +431,13 @@ export default function ChannelSidebar({
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
-          signalingChannel.send({
+          voiceChannel.send({
             type: "broadcast",
             event: "signal",
             payload: {
               from: currentUser.id,
               to: from,
-              signal: {
-                type: "answer",
-                sdp: answer,
-              },
+              signal: { type: "answer", sdp: answer },
             },
           });
         } else if (signal.type === "answer") {
@@ -428,118 +453,126 @@ export default function ChannelSidebar({
         }
       });
 
-      // Handle speaking updates from other peers
-      signalingChannel.on("broadcast", { event: "speaking" }, ({ payload }: any) => {
+      // Handle peer discovery via broadcast heartbeats
+      voiceChannel.on("broadcast", { event: "heartbeat" }, ({ payload }: any) => {
+        if (payload.userId === currentUser.id) return;
+
+        const isNew = !knownPeersRef.current[payload.userId];
+
+        // Update known peers
+        knownPeersRef.current[payload.userId] = {
+          user: {
+            id: payload.userId,
+            username: payload.username,
+            avatar: payload.avatar,
+            bio: "",
+          },
+          lastSeen: Date.now(),
+        };
+
+        // Update connected users UI
+        const peerList = Object.values(knownPeersRef.current).map((p) => p.user);
+        setConnectedUsers(peerList);
+
+        // REACTIVE REPLY: If a new peer joins and broadcasts their initial presence,
+        // immediately reply with our own presence so they don't have to wait for the interval.
+        if (payload.isInitial) {
+          voiceChannel.send({
+            type: "broadcast",
+            event: "heartbeat",
+            payload: {
+              userId: currentUser.id,
+              username: currentUser.username,
+              avatar: currentUser.avatar,
+              isInitial: false,
+            },
+          });
+        }
+
+        // If this is a new peer, initiate WebRTC (lower ID sends offer)
+        if (isNew && !peerConnectionsRef.current[payload.userId]) {
+          if (currentUser.id < payload.userId) {
+            sendOfferTo(payload.userId).catch((err) =>
+              console.error("[Voice] Offer failed:", err)
+            );
+          }
+        }
+      });
+
+      // Handle peer leaving
+      voiceChannel.on("broadcast", { event: "leave" }, ({ payload }: any) => {
+        if (payload.userId === currentUser.id) return;
+
+        delete knownPeersRef.current[payload.userId];
+        const pc = peerConnectionsRef.current[payload.userId];
+        if (pc) {
+          pc.close();
+          delete peerConnectionsRef.current[payload.userId];
+        }
+        const audio = document.getElementById(`audio-peer-${payload.userId}`);
+        if (audio) audio.remove();
+
+        const peerList = Object.values(knownPeersRef.current).map((p) => p.user);
+        setConnectedUsers(peerList);
+      });
+
+      // Handle speaking updates
+      voiceChannel.on("broadcast", { event: "speaking" }, ({ payload }: any) => {
         setSpeakers((prev) => ({ ...prev, [payload.userId]: payload.speaking }));
       });
 
-      await signalingChannel.subscribe();
-
-      // 4. Join Presence voice room
-      const presenceChannel = supabase.channel(presName, {
-        config: { presence: { key: currentUser.id.toString() } },
-      });
-      presenceChannelRef.current = presenceChannel;
-
-      presenceChannel.on("presence", { event: "sync" }, () => {
-        const state = presenceChannel.presenceState();
-        const users: User[] = [];
-        const activePeers: any[] = [];
-
-        Object.values(state).forEach((presenceList: any) => {
-          presenceList.forEach((presence: any) => {
-            if (presence.id !== currentUser.id) {
-              users.push({
-                id: presence.id,
-                username: presence.username,
-                avatar: presence.avatar,
-                bio: presence.bio || "",
-              });
-              activePeers.push(presence);
-            }
-          });
-        });
-
-        setConnectedUsers(users);
-
-        // Only the user with the lower ID initiates the WebRTC offer
-        // The other user waits to receive the offer via the signal handler
-        activePeers.forEach((peer) => {
-          if (!peerConnectionsRef.current[peer.id] && currentUser.id < peer.id) {
-            const pc = createPeerConnection(peer.id);
-            pc.createOffer().then(async (offer) => {
-              await pc.setLocalDescription(offer);
-              if (signalingChannelRef.current) {
-                signalingChannelRef.current.send({
-                  type: "broadcast",
-                  event: "signal",
-                  payload: {
-                    from: currentUser.id,
-                    to: peer.id,
-                    signal: {
-                      type: "offer",
-                      sdp: offer,
-                    },
-                  },
-                });
-              }
-            }).catch((err) => {
-              console.error("[Voice] Failed to create offer:", err);
-            });
-          }
-        });
-      });
-
-      // Also handle the "join" event so offers are sent immediately when a new peer joins
-      presenceChannel.on("presence", { event: "join" }, ({ newPresences }: any) => {
-        newPresences.forEach((presence: any) => {
-          if (presence.id !== currentUser.id && !peerConnectionsRef.current[presence.id] && currentUser.id < presence.id) {
-            const pc = createPeerConnection(presence.id);
-            pc.createOffer().then(async (offer) => {
-              await pc.setLocalDescription(offer);
-              if (signalingChannelRef.current) {
-                signalingChannelRef.current.send({
-                  type: "broadcast",
-                  event: "signal",
-                  payload: {
-                    from: currentUser.id,
-                    to: presence.id,
-                    signal: {
-                      type: "offer",
-                      sdp: offer,
-                    },
-                  },
-                });
-              }
-            }).catch((err) => {
-              console.error("[Voice] Failed to create offer on join:", err);
-            });
-          }
-        });
-      });
-
-      // Handle peer leaving — clean up their connection
-      presenceChannel.on("presence", { event: "leave" }, ({ leftPresences }: any) => {
-        leftPresences.forEach((presence: any) => {
-          const pc = peerConnectionsRef.current[presence.id];
-          if (pc) {
-            pc.close();
-            delete peerConnectionsRef.current[presence.id];
-          }
-          const audio = document.getElementById(`audio-peer-${presence.id}`);
-          if (audio) audio.remove();
-        });
-      });
-
-      await presenceChannel.subscribe(async (status) => {
+      // Subscribe to the channel
+      await voiceChannel.subscribe((status) => {
         if (status === "SUBSCRIBED") {
-          await presenceChannel.track({
-            id: currentUser.id,
-            username: currentUser.username,
-            avatar: currentUser.avatar,
-            isMuted,
-            isDeafened,
+          console.log("[Voice] Channel subscribed, starting heartbeat...");
+
+          // Send initial heartbeat immediately
+          voiceChannel.send({
+            type: "broadcast",
+            event: "heartbeat",
+            payload: {
+              userId: currentUser.id,
+              username: currentUser.username,
+              avatar: currentUser.avatar,
+              isInitial: true,
+            },
           });
+
+          // Send heartbeat every 2 seconds to announce presence
+          heartbeatRef.current = setInterval(() => {
+            voiceChannel.send({
+              type: "broadcast",
+              event: "heartbeat",
+              payload: {
+                userId: currentUser.id,
+                username: currentUser.username,
+                avatar: currentUser.avatar,
+                isInitial: false,
+              },
+            });
+
+            // Clean up peers that haven't sent a heartbeat in 8 seconds
+            const now = Date.now();
+            let changed = false;
+            Object.keys(knownPeersRef.current).forEach((idStr) => {
+              const id = Number(idStr);
+              if (now - knownPeersRef.current[id].lastSeen > 8000) {
+                delete knownPeersRef.current[id];
+                const pc = peerConnectionsRef.current[id];
+                if (pc) {
+                  pc.close();
+                  delete peerConnectionsRef.current[id];
+                }
+                const audio = document.getElementById(`audio-peer-${id}`);
+                if (audio) audio.remove();
+                changed = true;
+              }
+            });
+            if (changed) {
+              const peerList = Object.values(knownPeersRef.current).map((p) => p.user);
+              setConnectedUsers(peerList);
+            }
+          }, 2000);
         }
       });
 
@@ -571,6 +604,11 @@ export default function ChannelSidebar({
       osc.stop(ctx.currentTime + 0.3);
     } catch (e) {}
 
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
+    knownPeersRef.current = {};
     disconnectVoice();
     setActiveVoiceChannel(null);
     setConnectedUsers([]);
