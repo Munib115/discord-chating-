@@ -228,7 +228,7 @@ export default async function ChannelPage({ params }: PageProps) {
               {/* Posts List */}
               <div className="flex flex-col gap-3">
                 {posts.length > 0 ? (
-                  posts.map((post) => (
+                  posts.map((post: any) => (
                     <PostCard key={post.id} post={post} currentUserId={currentUser?.id} />
                   ))
                 ) : (
