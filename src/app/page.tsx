@@ -97,7 +97,7 @@ export default async function HomePage({ searchParams }: PageProps) {
     },
     take: 5,
   });
-  topUsers.sort((a, b) => (b._count.posts + b._count.comments) - (a._count.posts + a._count.comments));
+  topUsers.sort((a: any, b: any) => (b._count.posts + b._count.comments) - (a._count.posts + a._count.comments));
 
   return (
     <MobileLayoutWrapper
