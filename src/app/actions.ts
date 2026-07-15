@@ -6,9 +6,9 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
 
 // Initialize Supabase Client dynamically from process env
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-key";
+const supabase = supabaseUrl.includes("placeholder") ? null! : createClient(supabaseUrl, supabaseAnonKey);
 
 // Custom Mock Session Manager
 export async function getLoggedInUser() {
