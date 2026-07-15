@@ -95,7 +95,7 @@ export default async function ChannelPage({ params }: PageProps) {
     },
   });
 
-  const channelMembers = channelMembersRaw.map((cm) => ({
+  const channelMembers = channelMembersRaw.map((cm: any) => ({
     userId: cm.userId,
     user: cm.user,
   }));
