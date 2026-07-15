@@ -32,12 +32,22 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   // Fetch Dens for the leftmost icon sidebar
-  const dens = await prisma.den.findMany({
-    orderBy: { id: "asc" },
-  });
+  let dens: any[] = [];
+  let currentUser: any = null;
+  try {
+    dens = await prisma.den.findMany({
+      orderBy: { id: "asc" },
+    });
+  } catch {
+    // DB may not exist during build/static generation
+  }
 
   // Check if the current visitor has a registered identity
-  const currentUser = await getLoggedInUser();
+  try {
+    currentUser = await getLoggedInUser();
+  } catch {
+    // DB may not exist during build/static generation
+  }
 
   return (
     <html lang="en" className={cn("h-full antialiased dark", "font-sans", geist.variable)} suppressHydrationWarning>
