@@ -43,6 +43,7 @@ model User {
   reactions      MessageReaction[]
   reports        PostReport[]
   watchParties   WatchPartyMember[]
+  messages       Message[]
 }
 
 model UserBadge {
@@ -177,6 +178,7 @@ model Channel {
   pinnedMessageId Int?
 
   @@unique([denId, slug])
+  messages   Message[]
 }
 
 model Post {
@@ -326,4 +328,17 @@ model WatchPartyMember {
   joinedAt  DateTime       @default(now())
 
   @@unique([roomId, userId])
+}
+
+model Message {
+  id        Int       @id @default(autoincrement())
+  content   String
+  createdAt DateTime  @default(now())
+  authorId  Int
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  channelId Int
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  replyToId Int?
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: Cascade)
+  replies   Message[] @relation("MessageReplies")
 }
