@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// Fetch direct streaming sources (m3u8) using AnimeUnity (direct import)
+// Fetch direct streaming sources (m3u8) for a specific episode using AnimeUnity
+// Wraps URLs with our stream-proxy to bypass Referer headers and CORS restrictions
 export async function GET(req: NextRequest) {
   const episodeId = req.nextUrl.searchParams.get("episodeId");
   if (!episodeId) {
@@ -22,11 +23,18 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
-      sources: sources.sources.map((s: any) => ({
-        url: s.url,
-        quality: s.quality || "default",
-        isM3U8: s.isM3U8 ?? s.url?.includes(".m3u8"),
-      })),
+      sources: sources.sources.map((s: any) => {
+        const originalUrl = s.url;
+        // Wrap the HLS playlist URL with our server-side referer/CORS proxy
+        const proxiedUrl = `/api/anime/stream-proxy?url=${encodeURIComponent(originalUrl)}`;
+
+        return {
+          url: proxiedUrl,
+          originalUrl: originalUrl,
+          quality: s.quality || "default",
+          isM3U8: s.isM3U8 ?? originalUrl?.includes(".m3u8"),
+        };
+      }),
       headers: sources.headers || {},
       subtitles: sources.subtitles || [],
     });
