@@ -43,6 +43,7 @@ interface ChatRoomProps {
 
   // Audio recording states
   const [isRecording, setIsRecording] = useState(false);
+  const [isInitializingMedia, setIsInitializingMedia] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -353,6 +354,8 @@ interface ChatRoomProps {
 
   // Audio Recording handlers
   const startRecording = async () => {
+    if (isInitializingMedia || isRecording) return;
+    setIsInitializingMedia(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -413,13 +416,15 @@ interface ChatRoomProps {
     } catch (err) {
       console.error("Error accessing microphone:", err);
       alert("Could not access microphone. Please allow microphone permissions.");
+    } finally {
+      setIsInitializingMedia(false);
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
       setIsRecording(false);
+      mediaRecorderRef.current.stop();
     }
   };
 
@@ -756,10 +761,12 @@ interface ChatRoomProps {
                 sendTypingBroadcast(false);
               }, 2000);
             }}
-            disabled={isRecording}
+            disabled={isRecording || isInitializingMedia}
             placeholder={
-              isRecording
-                ? `Recording voice note...`
+              isInitializingMedia
+                ? "Connecting to microphone..."
+                : isRecording
+                ? "Recording voice note..."
                 : replyingTo
                 ? `Reply to @${getAuthorDetails(replyingTo.authorId).username}...`
                 : `Message as ${currentUser.username} (Press Enter)`
@@ -771,12 +778,21 @@ interface ChatRoomProps {
           <button
             type="button"
             onClick={isRecording ? stopRecording : startRecording}
+            disabled={isInitializingMedia}
             className={`w-10 h-10 rounded-md border flex items-center justify-center transition ${
               isRecording
                 ? "bg-rose-600 border-rose-500 text-white animate-pulse"
+                : isInitializingMedia
+                ? "bg-amber-600/30 border-amber-500/20 text-amber-500 cursor-not-allowed"
                 : "bg-[#383a40] border-[#1e1f22] text-[#949ba4] hover:text-white hover:bg-[#35373c]"
             }`}
-            title={isRecording ? "Stop Recording (Send)" : "Record Voice Note"}
+            title={
+              isInitializingMedia
+                ? "Starting Microphone..."
+                : isRecording
+                ? "Stop Recording (Send)"
+                : "Record Voice Note"
+            }
           >
             <svg className="w-5.5 h-5.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
