@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useTransition, useEffect } from "react";
-import { updateUserProfile, registerOrLinkSupabaseUser, disconnectSupabaseUser } from "@/app/actions";
+import { updateUserProfile, registerOrLinkSupabaseUser, disconnectSupabaseUser, updateUserStatus } from "@/app/actions";
 import { getAvatarBg, getAvatarEmoji } from "@/lib/avatar";
 import { createClient } from "@supabase/supabase-js";
 import Avatar from "./Avatar";
@@ -71,9 +71,13 @@ interface SettingsModalProps {
     username: string;
     avatar: string;
     bio: string | null;
+    statusEmoji?: string | null;
+    statusText?: string | null;
     email?: string | null;
     supabaseUid?: string | null;
     createdAt?: string | Date;
+    flair?: string | null;
+    bannerImage?: string | null;
   };
   onClose: () => void;
 }
@@ -82,6 +86,11 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
   const [username, setUsername] = useState(user.username);
   const [bio, setBio] = useState(user.bio || "");
   const [avatar, setAvatar] = useState(user.avatar);
+  const [statusEmoji, setStatusEmoji] = useState(user.statusEmoji || "");
+  const [statusText, setStatusText] = useState(user.statusText || "");
+  const [flair, setFlair] = useState(user.flair || "");
+  const [bannerImage, setBannerImage] = useState(user.bannerImage || "");
+  const [isSavingStatus, startStatusTransition] = useTransition();
   const [customAvatarUrl, setCustomAvatarUrl] = useState(
     user.avatar.startsWith("http://") || user.avatar.startsWith("https://") || user.avatar.startsWith("data:image/") ? user.avatar : ""
   );
@@ -151,14 +160,18 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
     setHasChanges(
       username.trim() !== user.username ||
       bio.trim() !== (user.bio || "") ||
-      finalAvatar !== user.avatar
+      finalAvatar !== user.avatar ||
+      flair.trim() !== (user.flair || "") ||
+      bannerImage.trim() !== (user.bannerImage || "")
     );
-  }, [username, bio, avatar, customAvatarUrl, user]);
+  }, [username, bio, avatar, customAvatarUrl, flair, bannerImage, user]);
 
   const handleReset = () => {
     setUsername(user.username);
     setBio(user.bio || "");
     setAvatar(user.avatar);
+    setFlair(user.flair || "");
+    setBannerImage(user.bannerImage || "");
     setCustomAvatarUrl(
       user.avatar.startsWith("http://") || user.avatar.startsWith("https://") || user.avatar.startsWith("data:image/") ? user.avatar : ""
     );
@@ -182,6 +195,8 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
           username: username.trim(),
           bio: bio.trim(),
           avatar: finalAvatar,
+          flair: flair.trim() || null,
+          bannerImage: bannerImage.trim() || null,
         });
         setHasChanges(false);
       } catch (err: any) {
@@ -228,7 +243,10 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
 
           {/* User Profile Card Preview */}
           <div className="bg-[#1e1f22] rounded-lg border border-[#232428] overflow-hidden">
-            <div className="h-16 bg-gradient-to-r from-indigo-600 to-indigo-950 p-4" />
+            <div
+              className="h-20 bg-gradient-to-r from-indigo-600 to-indigo-950 bg-cover bg-center transition-all duration-300"
+              style={bannerImage.trim() ? { backgroundImage: `url(${bannerImage.trim()})` } : undefined}
+            />
             <div className="px-6 pb-6 relative">
               {/* Avatar position */}
               <div className="absolute -top-9 left-6">
@@ -247,7 +265,19 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
                   <span className="text-[10px] bg-indigo-600/30 text-indigo-400 font-bold px-1.5 py-0.5 rounded select-none">
                     USER
                   </span>
+                  {flair.trim() && (
+                    <span className="text-[10px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-bold px-1.5 py-0.5 rounded select-none">
+                      {flair.trim()}
+                    </span>
+                  )}
                 </div>
+                {/* Status preview */}
+                {(statusEmoji || statusText) && (
+                  <div className="flex items-center gap-1 mt-1.5">
+                    {statusEmoji && <span className="text-sm">{statusEmoji}</span>}
+                    {statusText && <span className="text-xs text-[#949ba4] italic truncate max-w-[200px]">{statusText}</span>}
+                  </div>
+                )}
                 <p className="text-xs text-[#949ba4] mt-2 whitespace-pre-wrap italic">
                   {bio.trim() || "No bio set yet."}
                 </p>
@@ -286,6 +316,109 @@ export default function SettingsModal({ user, onClose }: SettingsModalProps) {
                 placeholder="Tell other members what you're watching or reading..."
                 className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition resize-none leading-relaxed"
               />
+            </div>
+
+            {/* Profile Flair input */}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="settings-flair" className="text-3xs uppercase font-bold text-[#b5bac1]">
+                Profile Flair
+              </label>
+              <input
+                id="settings-flair"
+                type="text"
+                maxLength={20}
+                value={flair}
+                onChange={(e) => setFlair(e.target.value)}
+                placeholder="e.g. Luffy Fan, Zoro Simp"
+                className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+              />
+            </div>
+
+            {/* Profile Banner Image Input */}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="settings-banner" className="text-3xs uppercase font-bold text-[#b5bac1]">
+                Profile Banner Image URL
+              </label>
+              <input
+                id="settings-banner"
+                type="text"
+                value={bannerImage}
+                onChange={(e) => setBannerImage(e.target.value)}
+                placeholder="Paste direct URL to a banner image (e.g. from Imgur or Unsplash)..."
+                className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+              />
+            </div>
+
+            {/* Custom Status */}
+            <div className="flex flex-col gap-2 p-3.5 bg-[#1e1f22]/60 rounded-lg border border-[#232428]">
+              <label className="text-3xs uppercase font-bold text-[#b5bac1] flex items-center gap-1.5">
+                <span>💬</span> Custom Status
+              </label>
+              <p className="text-[11px] text-[#949ba4] leading-relaxed">
+                Show what you&apos;re watching or feeling. Visible on your profile and in the sidebar.
+              </p>
+              {/* Quick emoji picks */}
+              <div className="flex gap-1.5 flex-wrap">
+                {["🍜","⚔️","🎮","📺","😴","🔥","👀","🌸","⚡","🏴‍☠️","❌"].map((em) => (
+                  <button
+                    key={em}
+                    type="button"
+                    onClick={() => setStatusEmoji(statusEmoji === em ? "" : em)}
+                    className={`w-8 h-8 rounded-md text-base flex items-center justify-center border transition-all ${
+                      statusEmoji === em
+                        ? "border-indigo-500 bg-indigo-500/20 scale-110"
+                        : "border-[#232428] bg-[#2b2d31] hover:border-[#4e5058]"
+                    }`}
+                  >
+                    {em}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  maxLength={1}
+                  value={statusEmoji}
+                  onChange={(e) => setStatusEmoji(e.target.value)}
+                  placeholder="😊"
+                  className="w-12 text-center bg-[#2b2d31] border border-[#111214] rounded p-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                />
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={statusText}
+                  onChange={(e) => setStatusText(e.target.value)}
+                  placeholder="Watching One Piece 🍖"
+                  className="flex-1 bg-[#2b2d31] border border-[#111214] rounded p-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition"
+                />
+                <button
+                  type="button"
+                  disabled={isSavingStatus}
+                  onClick={() => {
+                    startStatusTransition(async () => {
+                      await updateUserStatus({ statusEmoji, statusText });
+                    });
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-2 rounded transition disabled:opacity-50 whitespace-nowrap"
+                >
+                  {isSavingStatus ? "Saving..." : "Set Status"}
+                </button>
+              </div>
+              {(statusEmoji || statusText) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusEmoji("");
+                    setStatusText("");
+                    startStatusTransition(async () => {
+                      await updateUserStatus({ statusEmoji: "", statusText: "" });
+                    });
+                  }}
+                  className="text-xs text-rose-400 hover:text-rose-300 self-start font-semibold transition"
+                >
+                  ✕ Clear Status
+                </button>
+              )}
             </div>
 
             {/* Avatar Selection Grid */}

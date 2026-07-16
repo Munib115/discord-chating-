@@ -5,6 +5,10 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { createChannel } from "@/app/actions";
 import Avatar from "./Avatar";
+import NotificationBell from "./NotificationBell";
+import InviteModal from "./InviteModal";
+import { createWatchPartyRoom } from "@/app/actions";
+import { useTransition } from "react";
 import SettingsModal from "./SettingsModal";
 import { createClient } from "@supabase/supabase-js";
 
@@ -18,6 +22,10 @@ interface User {
   avatar: string;
   bio: string | null;
   createdAt?: string | Date;
+  statusEmoji?: string | null;
+  statusText?: string | null;
+  flair?: string | null;
+  bannerImage?: string | null;
 }
 
 interface Channel {
@@ -67,6 +75,8 @@ export default function ChannelSidebar({
   const [isPrivate, setIsPrivate] = useState(false);
   const [channelPassword, setChannelPassword] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isInviteOpen, setIsInviteOpen] = useState(false);
+  const [isPendingParty, startPartyTransition] = useTransition();
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -107,6 +117,7 @@ export default function ChannelSidebar({
   const peerConnectionsRef = useRef<Record<number, RTCPeerConnection>>({});
   const presenceChannelRef = useRef<any>(null);
   const signalingChannelRef = useRef<any>(null);
+  const queuedCandidatesRef = useRef<Record<number, RTCIceCandidateInit[]>>({});
 
   // Helper to disconnect voice
   const disconnectVoice = () => {
@@ -133,6 +144,7 @@ export default function ChannelSidebar({
       if (audio) audio.remove();
     });
     peerConnectionsRef.current = {};
+    queuedCandidatesRef.current = {};
 
     if (presenceChannelRef.current) {
       presenceChannelRef.current.unsubscribe();
@@ -362,7 +374,7 @@ export default function ChannelSidebar({
 
         // When remote audio track arrives, play it
         pc.ontrack = (event) => {
-          const remoteStream = event.streams[0];
+          const remoteStream = event.streams[0] || new MediaStream([event.track]);
           if (!remoteStream) return;
 
           let audio = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
@@ -375,7 +387,14 @@ export default function ChannelSidebar({
           }
           audio.srcObject = remoteStream;
           audio.muted = isDeafened;
-          audio.play().catch(() => {});
+          audio.play().catch((err) => {
+            console.warn("[Voice] Autoplay blocked, binding user interaction click listener:", err);
+            const playOnUserInteraction = () => {
+              audio.play().catch(() => {});
+              document.removeEventListener("click", playOnUserInteraction);
+            };
+            document.addEventListener("click", playOnUserInteraction);
+          });
         };
 
         pc.oniceconnectionstatechange = () => {
@@ -386,6 +405,19 @@ export default function ChannelSidebar({
         };
 
         return pc;
+      };
+
+      // Helper to process queued candidates once sdp description is applied
+      const processQueuedCandidates = async (peerId: number, pc: RTCPeerConnection) => {
+        const queue = queuedCandidatesRef.current[peerId] || [];
+        while (queue.length > 0) {
+          const candidateData = queue.shift();
+          if (candidateData) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidateData)).catch((err) => {
+              console.warn("[Voice] Failed to add queued ICE candidate:", err);
+            });
+          }
+        }
       };
 
       // Helper to initiate a WebRTC offer to a peer
@@ -413,7 +445,6 @@ export default function ChannelSidebar({
       // 3. Setup a SINGLE broadcast channel for everything (signaling + peer discovery)
       const voiceChannel = supabase.channel(chanName);
       signalingChannelRef.current = voiceChannel;
-      // We no longer use a separate presence channel
       presenceChannelRef.current = null;
 
       // Handle WebRTC signaling messages
@@ -428,6 +459,8 @@ export default function ChannelSidebar({
           }
           const pc = createPeerConnection(from);
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          await processQueuedCandidates(from, pc);
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
@@ -444,11 +477,19 @@ export default function ChannelSidebar({
           const pc = peerConnectionsRef.current[from];
           if (pc && pc.signalingState === "have-local-offer") {
             await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            await processQueuedCandidates(from, pc);
           }
         } else if (signal.type === "candidate") {
           const pc = peerConnectionsRef.current[from];
           if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch((err) => {
+              console.warn("[Voice] Failed to add ICE candidate:", err);
+            });
+          } else {
+            if (!queuedCandidatesRef.current[from]) {
+              queuedCandidatesRef.current[from] = [];
+            }
+            queuedCandidatesRef.current[from].push(signal.candidate);
           }
         }
       });
@@ -621,10 +662,40 @@ export default function ChannelSidebar({
   return (
     <div className="w-60 bg-[#2b2d31] flex flex-col h-screen flex-shrink-0 select-none">
       {/* Den Header Banner */}
-      <div className="h-12 border-b border-[#1f2023] flex items-center justify-between px-4 shadow-sm">
+      <div className="h-12 border-b border-[#1f2023] flex items-center justify-between px-4 shadow-sm gap-1.5 min-w-0">
         <h1 className="font-bold text-white text-[15px] truncate">
           {currentDen ? currentDen.name : "OtakuDen Home"}
         </h1>
+        {currentDen && currentUser && (
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Start Watch Party Button */}
+            <button
+              onClick={() => {
+                startPartyTransition(async () => {
+                  try {
+                    const room = await createWatchPartyRoom(currentDen.id);
+                    router.push(`/watch-party/${room.roomCode}`);
+                  } catch (e) {
+                    console.error("Failed to create watch party", e);
+                  }
+                });
+              }}
+              disabled={isPendingParty}
+              title="Start Watch Party"
+              className="p-1 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition disabled:opacity-50"
+            >
+              🍿
+            </button>
+            {/* Invite button */}
+            <button
+              onClick={() => setIsInviteOpen(true)}
+              title="Invite People"
+              className="p-1 text-[#949ba4] hover:text-white hover:bg-[#35373c] rounded transition"
+            >
+              ➕👤
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Channels List */}
@@ -781,6 +852,16 @@ export default function ChannelSidebar({
                     <span>all-discussions</span>
                   </div>
                 </Link>
+                <Link href="/?tab=trending">
+                  <div className={`flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] ${
+                    currentTab === "trending"
+                      ? "bg-[#35373c] text-white font-medium"
+                      : "text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]"
+                  }`}>
+                    <span className="text-xl">🔥</span>
+                    <span>trending</span>
+                  </div>
+                </Link>
                 <Link href="/?tab=explore-dens">
                   <div className={`flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] ${
                     currentTab === "explore-dens"
@@ -791,6 +872,34 @@ export default function ChannelSidebar({
                     <span>explore-dens</span>
                   </div>
                 </Link>
+                {currentUser && (
+                  <>
+                    <Link href="/watchlist">
+                      <div className="flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]">
+                        <span className="text-xl">📺</span>
+                        <span>watchlist</span>
+                      </div>
+                    </Link>
+                    <Link href="/leaderboard">
+                      <div className="flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]">
+                        <span className="text-xl">🏆</span>
+                        <span>leaderboard</span>
+                      </div>
+                    </Link>
+                    <Link href="/bookmarks">
+                      <div className="flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]">
+                        <span className="text-xl">🔖</span>
+                        <span>saved-posts</span>
+                      </div>
+                    </Link>
+                    <Link href="/search">
+                      <div className="flex items-center px-2 py-1.5 rounded-md gap-1.5 transition text-[15px] text-[#949ba4] hover:bg-[#35373c]/50 hover:text-[#dbdee1]">
+                        <span className="text-xl">🔍</span>
+                        <span>search</span>
+                      </div>
+                    </Link>
+                  </>
+                )}
               </div>
             </div>
 
@@ -922,6 +1031,10 @@ export default function ChannelSidebar({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
             </svg>
           </button>
+          {/* Notification Bell */}
+          {currentUser && (
+            <NotificationBell userId={currentUser.id} />
+          )}
           {/* Settings */}
           {currentUser && (
             <button
@@ -1057,6 +1170,15 @@ export default function ChannelSidebar({
         <SettingsModal
           user={currentUser}
           onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
+
+      {/* Invite Modal Overlay */}
+      {isInviteOpen && currentDen && (
+        <InviteModal
+          denId={currentDen.id}
+          denName={currentDen.name}
+          onClose={() => setIsInviteOpen(false)}
         />
       )}
     </div>

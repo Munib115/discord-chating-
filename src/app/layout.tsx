@@ -6,6 +6,7 @@ import DenSidebar from "@/components/DenSidebar";
 import { cn } from "@/lib/utils";
 import { getLoggedInUser } from "@/app/actions";
 import RegisterModal from "@/components/RegisterModal";
+import Script from "next/script";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
@@ -52,7 +53,9 @@ export default async function RootLayout({
   return (
     <html lang="en" className={cn("h-full antialiased dark", "font-sans", geist.variable)} suppressHydrationWarning>
       <head>
-        <script
+        <Script
+          id="otakuden-theme-init"
+          strategy="beforeInteractive"
           dangerouslySetInnerHTML={{
             __html: `
               (function() {

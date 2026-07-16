@@ -3,6 +3,8 @@
 import React, { useState, useTransition } from "react";
 import { createComment } from "@/app/actions";
 import Avatar from "./Avatar";
+import MarkdownRenderer from "./MarkdownRenderer";
+import FlairBadge from "./FlairBadge";
 
 interface User {
   id: number;
@@ -16,7 +18,7 @@ interface Comment {
   createdAt: Date;
   authorId: number;
   parentId: number | null;
-  author: User;
+  author: User & { flair?: string | null };
 }
 
 interface CommentSectionProps {
@@ -88,14 +90,13 @@ export default function CommentSection({
             {/* Meta */}
             <div className="flex items-center gap-2 text-xs text-[#949ba4] mb-1.5 flex-wrap">
               <span className="font-semibold text-slate-200">{comment.author.username}</span>
+              <FlairBadge flair={comment.author.flair || null} />
               <span>•</span>
               <span>{new Date(comment.createdAt).toLocaleDateString()}</span>
             </div>
 
             {/* Content */}
-            <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap break-words">
-              {comment.content}
-            </p>
+            <MarkdownRenderer content={comment.content} />
 
             {/* Actions */}
             {currentUserId && (

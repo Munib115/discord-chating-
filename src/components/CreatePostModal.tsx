@@ -205,14 +205,40 @@ export default function CreatePostModal({
 
               {/* Content */}
               <div>
-                <label htmlFor="post-content" className="block text-[#b5bac1] uppercase text-xs font-bold mb-2">Post Content</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label htmlFor="post-content" className="text-[#b5bac1] uppercase text-xs font-bold">Post Content</label>
+                  {/* Formatting toolbar */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      title="Insert spoiler tag — wraps selected/new text"
+                      onClick={() => {
+                        const textarea = document.getElementById("post-content") as HTMLTextAreaElement;
+                        if (!textarea) return;
+                        const start = textarea.selectionStart;
+                        const end = textarea.selectionEnd;
+                        const selected = content.slice(start, end) || "spoiler text";
+                        const newContent = content.slice(0, start) + `||${selected}||` + content.slice(end);
+                        setContent(newContent);
+                        setTimeout(() => {
+                          textarea.focus();
+                          textarea.setSelectionRange(start + 2, start + 2 + selected.length);
+                        }, 0);
+                      }}
+                      className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 bg-[#1e1f22] border border-[#35373c] hover:border-indigo-500 hover:text-indigo-400 text-[#949ba4] rounded transition select-none"
+                    >
+                      <span>👁️</span> Spoiler
+                    </button>
+                    <span className="text-[10px] text-[#949ba4] select-none">@mention users</span>
+                  </div>
+                </div>
                 <textarea
                   id="post-content"
                   required
                   rows={5}
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
-                  placeholder="Write your post details here..."
+                  placeholder="Write your post details here... Use ||spoiler text|| for spoilers, @username to mention."
                   className="w-full bg-[#1e1f22] border border-[#111214] rounded p-2.5 text-white focus:outline-none focus:border-indigo-500 transition resize-none"
                 />
               </div>

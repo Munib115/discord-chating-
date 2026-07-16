@@ -3,6 +3,7 @@ import { getLoggedInUser, getAllUsers } from "@/app/actions";
 import ChannelSidebar from "@/components/ChannelSidebar";
 import ChatRoom from "@/components/ChatRoom";
 import PostCard from "@/components/PostCard";
+import TrendingBadge from "@/components/TrendingBadge";
 import Link from "next/link";
 import Avatar from "@/components/Avatar";
 import MobileLayoutWrapper from "@/components/MobileLayoutWrapper";
@@ -29,6 +30,7 @@ export default async function HomePage({ searchParams }: PageProps) {
   // Fetch data depending on tab
   let posts: any[] = [];
   let dens: any[] = [];
+  let trendingPosts: any[] = [];
   let recipientUser: any = null;
   let dmChannelId = 0;
 
@@ -78,6 +80,31 @@ export default async function HomePage({ searchParams }: PageProps) {
         },
       },
     });
+  } else if (currentTab === "trending") {
+    // Fetch posts from the last 7 days, sorted by hot score (votes + comments*2)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    trendingPosts = await prisma.post.findMany({
+      where: { createdAt: { gte: sevenDaysAgo } },
+      include: {
+        author: true,
+        den: true,
+        channel: true,
+        votes: true,
+        _count: { select: { comments: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // Sort by hot score client-side
+    trendingPosts.sort((a: any, b: any) => {
+      const scoreA = a.votes.reduce((acc: number, v: any) => acc + v.value, 0) + a._count.comments * 2;
+      const scoreB = b.votes.reduce((acc: number, v: any) => acc + v.value, 0) + b._count.comments * 2;
+      return scoreB - scoreA;
+    });
+
+    trendingPosts = trendingPosts.slice(0, 20); // Top 20 trending
   } else if (currentTab === "dm" && recipientIdStr) {
     const rId = Number(recipientIdStr);
     recipientUser = allUsers.find((u: any) => u.id === rId);
@@ -240,6 +267,38 @@ export default async function HomePage({ searchParams }: PageProps) {
                     </div>
                   )}
                 </div>
+              </div>
+            ) : currentTab === "trending" ? (
+              /* 🔥 Trending Posts */
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🔥</span>
+                  <h2 className="text-base font-bold text-white">Hot This Week</h2>
+                  <span className="text-xs text-[#949ba4]">Top posts from the last 7 days</span>
+                </div>
+                {trendingPosts.length === 0 ? (
+                  <div className="text-center py-16 bg-[#2b2d31]/30 rounded-md border border-dashed border-[#232428] p-6">
+                    <span className="text-3xl">🌊</span>
+                    <h3 className="text-lg font-bold text-white mt-2">No trending posts yet</h3>
+                    <p className="text-sm text-[#949ba4] mt-1">Start posting and voting to see what's trending!</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {trendingPosts.map((post: any, index: number) => (
+                      <div key={post.id} className="relative">
+                        {/* Rank badge overlay */}
+                        {index < 5 && (
+                          <div className="absolute -left-1 -top-1 z-10">
+                            <TrendingBadge rank={index + 1} />
+                          </div>
+                        )}
+                        <div className={index < 3 ? "ring-1 ring-amber-500/20 rounded-md" : ""}>
+                          <PostCard post={post} currentUserId={currentUser?.id} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               /* Explore Dens Grid */

@@ -1,14 +1,21 @@
 "use client";
 
-import React, { useTransition } from "react";
+import React, { useState, useTransition } from "react";
 import Link from "next/link";
 import { votePost } from "@/app/actions";
 import Avatar from "./Avatar";
+import MarkdownRenderer from "./MarkdownRenderer";
+import BookmarkButton from "./BookmarkButton";
+import SharePostButton from "./SharePostButton";
+import ReportPostButton from "./ReportPostButton";
+import Lightbox from "./Lightbox";
+import FlairBadge from "./FlairBadge";
 
 interface User {
   id: number;
   username: string;
   avatar: string;
+  flair?: string | null;
 }
 
 interface Den {
@@ -37,9 +44,8 @@ interface Post {
   den: Den;
   channel: Channel;
   votes: Vote[];
-  _count: {
-    comments: number;
-  };
+  saves?: { userId: number }[];
+  _count?: { comments: number };
 }
 
 interface PostCardProps {
@@ -49,6 +55,7 @@ interface PostCardProps {
 
 export default function PostCard({ post, currentUserId }: PostCardProps) {
   const [, startTransition] = useTransition();
+  const [showLightbox, setShowLightbox] = useState(false);
 
   // Compute votes score
   const score = post.votes.reduce((acc, vote) => acc + vote.value, 0);
@@ -57,6 +64,11 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
   const userVote = currentUserId
     ? post.votes.find((v) => v.userId === currentUserId)?.value || 0
     : 0;
+
+  // Determine if bookmarked
+  const initialIsBookmarked = currentUserId && post.saves
+    ? post.saves.some((s) => s.userId === currentUserId)
+    : false;
 
   const handleVote = (value: number) => {
     if (!currentUserId) return;
@@ -68,7 +80,7 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
   const tagList = post.tags ? post.tags.split(",").map((t) => t.trim()) : [];
 
   return (
-    <article className="flex bg-[#2b2d31] rounded-md overflow-hidden border border-[#232428] hover:border-[#35373c] transition duration-200 shadow-sm">
+    <article className="flex bg-[#2b2d31] rounded-md overflow-hidden border border-[#232428] hover:border-[#35373c] transition duration-200 shadow-sm relative">
       {/* Vote Panel (Reddit Style on the Left) */}
       <div className="w-11 bg-[#1e1f22]/40 flex flex-col items-center py-2.5 px-1 select-none flex-shrink-0">
         <button
@@ -115,19 +127,27 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
       {/* Main Content Area */}
       <div className="flex-1 p-3.5 flex flex-col gap-2 min-w-0">
         {/* Post Metadata Header */}
-        <div className="flex items-center gap-1.5 flex-wrap text-xs text-[#949ba4]">
-          <Avatar avatar={post.author.avatar} className="w-5.5 h-5.5 text-[10px]" />
-          <span className="font-semibold text-slate-200">{post.author.username}</span>
-          <span>•</span>
-          <span>posted in</span>
-          <Link
-            href={`/d/${post.den.slug}/${post.channel.slug}`}
-            className="text-indigo-400 hover:underline font-medium"
-          >
-            d/{post.den.slug} #{post.channel.name}
-          </Link>
-          <span>•</span>
-          <span>{new Date(post.createdAt).toLocaleDateString()}</span>
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-[#949ba4]">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <Avatar avatar={post.author.avatar} className="w-5.5 h-5.5 text-[10px]" />
+            <span className="font-semibold text-slate-200">{post.author.username}</span>
+            <FlairBadge flair={post.author.flair || null} />
+            <span>•</span>
+            <span>posted in</span>
+            <Link
+              href={`/d/${post.den.slug}/${post.channel.slug}`}
+              className="text-indigo-400 hover:underline font-medium"
+            >
+              d/{post.den.slug} #{post.channel.name}
+            </Link>
+            <span>•</span>
+            <span>{new Date(post.createdAt).toLocaleDateString()}</span>
+          </div>
+
+          {/* Bookmark */}
+          {currentUserId && (
+            <BookmarkButton postId={post.id} initialIsBookmarked={initialIsBookmarked} />
+          )}
         </div>
 
         {/* Post Title */}
@@ -136,9 +156,9 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
         </h2>
 
         {/* Post Content Preview */}
-        <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap break-words line-clamp-3">
-          {post.content}
-        </p>
+        <div className="line-clamp-3">
+          <MarkdownRenderer content={post.content} />
+        </div>
 
         {/* Image Attachment */}
         {post.imageUrl && (
@@ -147,7 +167,8 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
             <img
               src={post.imageUrl}
               alt={post.title}
-              className="max-h-96 w-auto object-contain hover:scale-[1.01] transition duration-300"
+              onClick={() => setShowLightbox(true)}
+              className="max-h-96 w-auto object-contain hover:scale-[1.01] transition duration-300 cursor-zoom-in"
               onError={(e) => {
                 (e.target as HTMLElement).style.display = "none";
               }}
@@ -168,21 +189,30 @@ export default function PostCard({ post, currentUserId }: PostCardProps) {
             ))}
           </div>
 
-          <Link href={`/posts/${post.id}`}>
-            <div className="flex items-center gap-1.5 text-xs text-[#949ba4] hover:text-white transition px-2 py-1 bg-[#1e1f22]/50 hover:bg-[#35373c] rounded-md">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                />
-              </svg>
-              <span>{post._count.comments} Comments</span>
-            </div>
-          </Link>
+          <div className="flex items-center gap-3">
+            {currentUserId && <ReportPostButton postId={post.id} />}
+            <SharePostButton postId={post.id} />
+            <Link href={`/posts/${post.id}`}>
+              <div className="flex items-center gap-1.5 text-xs text-[#949ba4] hover:text-white transition px-2 py-1 bg-[#1e1f22]/50 hover:bg-[#35373c] rounded-md">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                  />
+                </svg>
+                <span>Comments</span>
+              </div>
+            </Link>
+          </div>
         </div>
       </div>
+
+      {/* Lightbox modal */}
+      {showLightbox && post.imageUrl && (
+        <Lightbox src={post.imageUrl} alt={post.title} onClose={() => setShowLightbox(false)} />
+      )}
     </article>
   );
 }

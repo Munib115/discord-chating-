@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: [
+    "@consumet/extensions",
+    "got-scraping",
+    "cheerio",
+  ],
 };
 
 export default nextConfig;

@@ -413,6 +413,8 @@ export async function updateUserProfile(formData: {
   username: string;
   bio: string;
   avatar?: string;
+  flair?: string | null;
+  bannerImage?: string | null;
 }) {
   const user = await getLoggedInUser();
   if (!user) throw new Error("Unauthorized");
@@ -438,6 +440,8 @@ export async function updateUserProfile(formData: {
       username: cleanUsername,
       bio: cleanBio,
       ...(formData.avatar !== undefined ? { avatar: formData.avatar } : {}),
+      ...(formData.flair !== undefined ? { flair: formData.flair } : {}),
+      ...(formData.bannerImage !== undefined ? { bannerImage: formData.bannerImage } : {}),
     },
   });
 
@@ -581,4 +585,704 @@ export async function joinChannel(channelId: number, passwordInput?: string) {
 
   return member;
 }
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Custom Status Message
+// ─────────────────────────────────────────────────────────────
+export async function updateUserStatus(data: { statusEmoji: string; statusText: string }) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const emoji = data.statusEmoji.trim().slice(0, 2);
+  const text = data.statusText.trim().slice(0, 80);
+
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: { statusEmoji: emoji, statusText: text },
+  });
+
+  if (supabase && user.supabaseUid) {
+    try {
+      await supabase.from("UserStatus").upsert([
+        {
+          userId: user.id,
+          supabaseUid: user.supabaseUid,
+          emoji,
+          text,
+          updatedAt: new Date().toISOString(),
+        },
+      ], { onConflict: "userId" });
+    } catch (err) {
+      console.error("Failed to sync status to Supabase:", err);
+    }
+  }
+
+  revalidatePath("/");
+  return updatedUser;
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Den Invite Links
+// ─────────────────────────────────────────────────────────────
+export async function createDenInvite(denId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const den = await prisma.den.findUnique({ where: { id: denId } });
+  if (!den) throw new Error("Den not found");
+
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+  let token = "";
+  for (let i = 0; i < 8; i++) {
+    token += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  const invite = await prisma.denInvite.create({
+    data: {
+      token,
+      denId,
+      createdBy: user.id,
+      maxUses: 0,
+    },
+  });
+
+  if (supabase) {
+    try {
+      await supabase.from("DenInvite").insert([
+        {
+          token: invite.token,
+          denId: invite.denId,
+          createdBy: invite.createdBy,
+          maxUses: 0,
+          uses: 0,
+        },
+      ]);
+    } catch (err) {
+      console.error("Failed to sync invite to Supabase:", err);
+    }
+  }
+
+  return invite;
+}
+
+export async function joinDenWithInvite(token: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const invite = await prisma.denInvite.findUnique({
+    where: { token },
+    include: { den: true },
+  });
+
+  if (!invite) throw new Error("Invalid or expired invite link.");
+
+  if (invite.maxUses && invite.maxUses > 0 && invite.uses >= invite.maxUses) {
+    throw new Error("This invite link has reached its maximum number of uses.");
+  }
+
+  await prisma.denMember.upsert({
+    where: { denId_userId: { denId: invite.denId, userId: user.id } },
+    update: {},
+    create: { denId: invite.denId, userId: user.id },
+  });
+
+  await prisma.denInvite.update({
+    where: { id: invite.id },
+    data: { uses: invite.uses + 1 },
+  });
+
+  revalidatePath(`/d/${invite.den.slug}`);
+  revalidatePath("/");
+
+  return invite.den;
+}
+
+export async function getDenInvite(denId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  let invite = await prisma.denInvite.findFirst({
+    where: { denId, createdBy: user.id },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!invite) {
+    invite = await createDenInvite(denId);
+  }
+
+  return invite;
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: @Mention & Reply & Vote Notifications
+// ─────────────────────────────────────────────────────────────
+function extractMentions(content: string): string[] {
+  const matches = content.match(/@([a-zA-Z0-9_-]{2,25})/g) || [];
+  return [...new Set(matches.map((m) => m.slice(1)))];
+}
+
+async function createMentionNotifications(
+  content: string,
+  postId: number,
+  authorId: number,
+  authorUsername: string
+) {
+  const mentions = extractMentions(content);
+  if (mentions.length === 0) return;
+
+  for (const username of mentions) {
+    const targetUser = await prisma.user.findUnique({ where: { username } });
+    if (!targetUser || targetUser.id === authorId) continue;
+
+    await prisma.notification.create({
+      data: {
+        userId: targetUser.id,
+        type: "mention",
+        message: `@${authorUsername} mentioned you in a post`,
+        link: `/posts/${postId}`,
+        read: false,
+      },
+    });
+  }
+}
+
+export async function getNotifications() {
+  const user = await getLoggedInUser();
+  if (!user) return [];
+
+  return prisma.notification.findMany({
+    where: { userId: user.id },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+}
+
+export async function getUnreadNotificationCount() {
+  const user = await getLoggedInUser();
+  if (!user) return 0;
+
+  return prisma.notification.count({
+    where: { userId: user.id, read: false },
+  });
+}
+
+export async function markNotificationsRead() {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.notification.updateMany({
+    where: { userId: user.id, read: false },
+    data: { read: true },
+  });
+
+  revalidatePath("/");
+}
+
+// ─────────────────────────────────────────────────────────────
+// GAMIFICATION: XP, Levels, Streaks, Badges
+// ─────────────────────────────────────────────────────────────
+export async function addXP(userId: number, amount: number) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) return;
+
+  const newXP = user.xp + amount;
+  let tempLevel = 1;
+  let tempXpThreshold = 0;
+  while (true) {
+    const nextThreshold = Math.floor(100 * Math.pow(1.5, tempLevel - 1));
+    if (newXP >= tempXpThreshold + nextThreshold) {
+      tempXpThreshold += nextThreshold;
+      tempLevel++;
+    } else {
+      break;
+    }
+  }
+
+  const didLevelUp = tempLevel > user.level;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      xp: newXP,
+      level: tempLevel,
+    },
+  });
+
+  if (didLevelUp) {
+    await prisma.notification.create({
+      data: {
+        userId,
+        type: "badge",
+        message: `🎉 Level Up! You reached Level ${tempLevel}!`,
+        link: "/",
+      },
+    });
+  }
+
+  if (tempLevel >= 5) {
+    await awardBadge(userId, "Rising Anime", "⚡");
+  }
+  if (tempLevel >= 10) {
+    await awardBadge(userId, "Den Veteran", "⚔️");
+  }
+
+  revalidatePath("/");
+}
+
+export async function awardBadge(userId: number, badgeName: string, icon: string) {
+  const existing = await prisma.userBadge.findFirst({
+    where: { userId, name: badgeName },
+  });
+
+  if (!existing) {
+    await prisma.userBadge.create({
+      data: {
+        userId,
+        name: badgeName,
+        icon,
+      },
+    });
+
+    await prisma.notification.create({
+      data: {
+        userId,
+        type: "badge",
+        message: `🎖️ New Badge Awarded: "${badgeName}" ${icon}!`,
+        link: "/",
+      },
+    });
+    revalidatePath("/");
+  }
+}
+
+export async function handleDailyLogin() {
+  const user = await getLoggedInUser();
+  if (!user) return;
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  if (user.lastLoginDate === todayStr) return;
+
+  let newStreak = 1;
+  if (user.lastLoginDate) {
+    const lastDate = new Date(user.lastLoginDate);
+    const today = new Date(todayStr);
+    const diffTime = Math.abs(today.getTime() - lastDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 1) {
+      newStreak = user.loginStreak + 1;
+    }
+  }
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      loginStreak: newStreak,
+      lastLoginDate: todayStr,
+    },
+  });
+
+  await addXP(user.id, 5 + newStreak * 2);
+
+  if (newStreak >= 7) {
+    await awardBadge(user.id, "7-Day Streak", "🔥");
+  }
+  if (newStreak >= 30) {
+    await awardBadge(user.id, "30-Day Streak", "💎");
+  }
+
+  revalidatePath("/");
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Watch Party Rooms
+// ─────────────────────────────────────────────────────────────
+export async function createWatchPartyRoom(denId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const code = Math.random().toString(36).substring(2, 8).toLowerCase();
+
+  const room = await prisma.watchPartyRoom.create({
+    data: {
+      roomCode: code,
+      denId,
+      hostId: user.id,
+    },
+  });
+
+  revalidatePath("/");
+  return room;
+}
+
+export async function updateWatchPartyUrl(roomCode: string, url: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.watchPartyRoom.update({
+    where: { roomCode },
+    data: { videoUrl: url },
+  });
+
+  revalidatePath(`/watch-party/${roomCode}`);
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Polls
+// ─────────────────────────────────────────────────────────────
+export async function votePoll(pollId: number, optionIndex: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.pollVote.upsert({
+    where: {
+      pollId_userId: {
+        pollId,
+        userId: user.id,
+      },
+    },
+    update: {
+      optionIndex,
+    },
+    create: {
+      pollId,
+      userId: user.id,
+      optionIndex,
+    },
+  });
+
+  await addXP(user.id, 2);
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Watchlist
+// ─────────────────────────────────────────────────────────────
+export async function updateWatchlist(formData: {
+  animeName: string;
+  status: string;
+  episode?: number;
+  rating?: number;
+  notes?: string;
+  animeImage?: string;
+}) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.watchlistEntry.upsert({
+    where: {
+      userId_animeName: {
+        userId: user.id,
+        animeName: formData.animeName,
+      },
+    },
+    update: {
+      status: formData.status,
+      episode: formData.episode ?? 0,
+      rating: formData.rating || null,
+      notes: formData.notes || null,
+      animeImage: formData.animeImage || undefined,
+    },
+    create: {
+      userId: user.id,
+      animeName: formData.animeName,
+      status: formData.status,
+      episode: formData.episode ?? 0,
+      rating: formData.rating || null,
+      notes: formData.notes || null,
+      animeImage: formData.animeImage || null,
+    },
+  });
+
+  const totalWatchlist = await prisma.watchlistEntry.count({
+    where: { userId: user.id },
+  });
+
+  if (totalWatchlist >= 10) {
+    await awardBadge(user.id, "Anime Scholar", "📚");
+  }
+
+  revalidatePath("/");
+}
+
+export async function deleteWatchlistEntry(animeName: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.watchlistEntry.delete({
+    where: {
+      userId_animeName: {
+        userId: user.id,
+        animeName,
+      },
+    },
+  });
+
+  revalidatePath("/");
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: User Follow & Bookmarks & Reports
+// ─────────────────────────────────────────────────────────────
+export async function followUser(targetUserId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+  if (user.id === targetUserId) throw new Error("Cannot follow yourself");
+
+  await prisma.userFollow.upsert({
+    where: {
+      followerId_followingId: {
+        followerId: user.id,
+        followingId: targetUserId,
+      },
+    },
+    update: {},
+    create: {
+      followerId: user.id,
+      followingId: targetUserId,
+    },
+  });
+
+  await prisma.notification.create({
+    data: {
+      userId: targetUserId,
+      type: "follow",
+      message: `👤 @${user.username} started following you!`,
+      link: "/",
+    },
+  });
+
+  const followCount = await prisma.userFollow.count({
+    where: { followerId: user.id },
+  });
+  if (followCount >= 10) {
+    await awardBadge(user.id, "Social Butterfly", "🦋");
+  }
+
+  revalidatePath("/");
+}
+
+export async function unfollowUser(targetUserId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.userFollow.deleteMany({
+    where: {
+      followerId: user.id,
+      followingId: targetUserId,
+    },
+  });
+
+  revalidatePath("/");
+}
+
+export async function bookmarkPost(postId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.savedPost.upsert({
+    where: {
+      userId_postId: {
+        userId: user.id,
+        postId,
+      },
+    },
+    update: {},
+    create: {
+      userId: user.id,
+      postId,
+    },
+  });
+
+  revalidatePath("/");
+}
+
+export async function unbookmarkPost(postId: number) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.savedPost.deleteMany({
+    where: {
+      userId: user.id,
+      postId,
+    },
+  });
+
+  revalidatePath("/");
+}
+
+export async function reportPost(postId: number, reason: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  await prisma.postReport.upsert({
+    where: {
+      postId_userId: {
+        postId,
+        userId: user.id,
+      },
+    },
+    update: {
+      reason,
+    },
+    create: {
+      postId,
+      userId: user.id,
+      reason,
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Den Management (Welcome & Rules)
+// ─────────────────────────────────────────────────────────────
+export async function updateDenWelcomeMessage(denId: number, welcomeMessage: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const den = await prisma.den.findUnique({ where: { id: denId } });
+  if (!den || den.ownerId !== user.id) throw new Error("Only Den owners can do this");
+
+  await prisma.den.update({
+    where: { id: denId },
+    data: { welcomeMessage },
+  });
+
+  revalidatePath(`/d/${den.slug}`);
+}
+
+export async function updateDenRules(denId: number, rules: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const den = await prisma.den.findUnique({ where: { id: denId } });
+  if (!den || den.ownerId !== user.id) throw new Error("Only Den owners can do this");
+
+  await prisma.den.update({
+    where: { id: denId },
+    data: { rules },
+  });
+
+  revalidatePath(`/d/${den.slug}`);
+}
+
+// ─────────────────────────────────────────────────────────────
+// FEATURE: Message Reactions
+// ─────────────────────────────────────────────────────────────
+export async function toggleMessageReaction(messageId: string, channelId: number, emoji: string) {
+  const user = await getLoggedInUser();
+  if (!user) throw new Error("Unauthorized");
+
+  const existing = await prisma.messageReaction.findUnique({
+    where: {
+      messageId_userId_emoji: {
+        messageId,
+        userId: user.id,
+        emoji,
+      },
+    },
+  });
+
+  if (existing) {
+    await prisma.messageReaction.delete({
+      where: { id: existing.id },
+    });
+  } else {
+    await prisma.messageReaction.create({
+      data: {
+        messageId,
+        channelId,
+        userId: user.id,
+        emoji,
+      },
+    });
+  }
+
+  await addXP(user.id, 1);
+}
+
+export async function getReactionsForChannel(channelId: number) {
+  return prisma.messageReaction.findMany({
+    where: { channelId },
+    include: { user: { select: { username: true } } },
+  });
+}
+
+export async function searchAnimeFromJikan(query: string) {
+  // Try AniList first (fast, robust, higher rate limits)
+  try {
+    const graphqlQuery = `
+      query ($search: String) {
+        Page(perPage: 10) {
+          media(search: $search, type: ANIME) {
+            id
+            idMal
+            title {
+              english
+              romaji
+            }
+            coverImage {
+              medium
+              large
+            }
+            description
+            episodes
+            trailer {
+              id
+              site
+            }
+          }
+        }
+      }
+    `;
+
+    const res = await fetch("https://graphql.anilist.co", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        query: graphqlQuery,
+        variables: { search: query.trim() },
+      }),
+    });
+
+    if (res.ok) {
+      const json = await res.json();
+      const mediaList = json.data?.Page?.media || [];
+      return mediaList.map((item: any) => ({
+        mal_id: item.idMal || item.id,
+        title: item.title.english || item.title.romaji || "Unknown Anime",
+        images: {
+          jpg: {
+            image_url: item.coverImage.large || item.coverImage.medium || "",
+            small_image_url: item.coverImage.medium || "",
+          }
+        },
+        synopsis: item.description ? item.description.replace(/<[^>]*>/g, "") : "No synopsis available.",
+        episodes: item.episodes,
+        type: "TV",
+        trailer: item.trailer?.site === "youtube" ? { url: `https://www.youtube.com/watch?v=${item.trailer.id}` } : null,
+      }));
+    }
+  } catch (err) {
+    console.error("AniList search failed, falling back to Jikan:", err);
+  }
+
+  // Fallback to Jikan API
+  try {
+    const res = await fetch(
+      `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query.trim())}&limit=10`
+    );
+    if (!res.ok) {
+      throw new Error(`Failed to fetch from Jikan: ${res.statusText}`);
+    }
+    const data = await res.json();
+    return data.data || [];
+  } catch (err) {
+    console.error("Jikan API Server fetch error:", err);
+    return [];
+  }
+}
+
 

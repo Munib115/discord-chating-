@@ -10,36 +10,111 @@ datasource db {
 }
 
 model User {
-  id            Int         @id @default(autoincrement())
-  username      String      @unique
-  discriminator String      @default("0000") // Discord-style 4-digit tag e.g. #4821
-  avatar        String      // Path or avatar slug
-  bio           String?
-  email         String?     @unique
-  supabaseUid   String?     @unique
-  createdAt     DateTime    @default(now())
-  posts         Post[]
-  comments      Comment[]
-  votes         Vote[]
-  ownedDens     Den[]       @relation("DenOwner")
-  joinedDens    DenMember[]
+  id             Int         @id @default(autoincrement())
+  username       String      @unique
+  discriminator  String      @default("0000")
+  avatar         String
+  bio            String?
+  statusEmoji    String?     @default("")
+  statusText     String?     @default("")
+  flair          String?     // e.g. "Luffy Fan"
+  bannerImage    String?     // Profile banner URL
+  theme          String?     @default("dark") // "dark" | "light"
+  xp             Int         @default(0)
+  level          Int         @default(1)
+  loginStreak    Int         @default(0)
+  lastLoginDate  String?     // ISO date string
+  email          String?     @unique
+  supabaseUid    String?     @unique
+  createdAt      DateTime    @default(now())
+  posts          Post[]
+  comments       Comment[]
+  votes          Vote[]
+  ownedDens      Den[]       @relation("DenOwner")
+  joinedDens     DenMember[]
   joinedChannels ChannelMember[]
+  notifications  Notification[]
+  badges         UserBadge[]
+  following      UserFollow[] @relation("Follower")
+  followers      UserFollow[] @relation("Following")
+  watchlist      WatchlistEntry[]
+  savedPosts     SavedPost[]
+  pollVotes      PollVote[]
+  reactions      MessageReaction[]
+  reports        PostReport[]
+  watchParties   WatchPartyMember[]
+}
+
+model UserBadge {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String   // e.g. "First Post", "7-Day Streak"
+  icon      String   // emoji e.g. "🌱"
+  color     String   @default("#6366f1")
+  awardedAt DateTime @default(now())
+
+  @@unique([userId, name])
+}
+
+model UserFollow {
+  id          Int      @id @default(autoincrement())
+  followerId  Int
+  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId Int
+  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@unique([followerId, followingId])
+}
+
+model WatchlistEntry {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  animeName String
+  animeImage String?
+  status    String   @default("plan") // "watching" | "completed" | "dropped" | "plan" | "hold"
+  episode   Int      @default(0)
+  rating    Int?     // 1-10
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, animeName])
+}
+
+model SavedPost {
+  id      Int      @id @default(autoincrement())
+  userId  Int
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId  Int
+  post    Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  savedAt DateTime @default(now())
+
+  @@unique([userId, postId])
 }
 
 model Den {
-  id          Int          @id @default(autoincrement())
-  name        String       @unique
-  slug        String       @unique
-  description String
-  banner      String?      // Banner style/color/image
-  icon        String?      // Icon initials or custom style
-  createdAt   DateTime     @default(now())
-  ownerId     Int?
-  owner       User?        @relation("DenOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  passcode    String       @default("1234") // Invite passcode to protect entry
-  channels    Channel[]
-  posts       Post[]
-  members     DenMember[]
+  id              Int            @id @default(autoincrement())
+  name            String         @unique
+  slug            String         @unique
+  description     String
+  banner          String?
+  icon            String?
+  createdAt       DateTime       @default(now())
+  ownerId         Int?
+  owner           User?          @relation("DenOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  passcode        String         @default("1234")
+  welcomeMessage  String?
+  rules           String?
+  channels        Channel[]
+  posts           Post[]
+  members         DenMember[]
+  invites         DenInvite[]
+  categories      ChannelCategory[]
+  roles           DenRole[]
+  watchPartyRooms WatchPartyRoom[]
 }
 
 model DenMember {
@@ -53,18 +128,53 @@ model DenMember {
   @@unique([denId, userId])
 }
 
-model Channel {
+model DenRole {
+  id          Int           @id @default(autoincrement())
+  denId       Int
+  den         Den           @relation(fields: [denId], references: [id], onDelete: Cascade)
+  name        String
+  color       String        @default("#6366f1")
+  permissions String        @default("[]") // JSON array of permission strings
+  position    Int           @default(0)
+  members     DenRoleMember[]
+
+  @@unique([denId, name])
+}
+
+model DenRoleMember {
   id        Int      @id @default(autoincrement())
-  name      String
-  slug      String
-  type      String   @default("TEXT") // "TEXT" or "VOICE"
-  password  String?  // Optional password to join/lock private channels
+  roleId    Int
+  role      DenRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  userId    Int
   denId     Int
-  den       Den      @relation(fields: [denId], references: [id], onDelete: Cascade)
-  posts     Post[]
   createdAt DateTime @default(now())
 
-  members   ChannelMember[]
+  @@unique([roleId, userId])
+}
+
+model ChannelCategory {
+  id       Int       @id @default(autoincrement())
+  denId    Int
+  den      Den       @relation(fields: [denId], references: [id], onDelete: Cascade)
+  name     String
+  position Int       @default(0)
+  channels Channel[]
+}
+
+model Channel {
+  id         Int              @id @default(autoincrement())
+  name       String
+  slug       String
+  type       String           @default("TEXT") // "TEXT" | "VOICE" | "ANNOUNCEMENT"
+  password   String?
+  denId      Int
+  den        Den              @relation(fields: [denId], references: [id], onDelete: Cascade)
+  categoryId Int?
+  category   ChannelCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  posts      Post[]
+  createdAt  DateTime         @default(now())
+  members    ChannelMember[]
+  pinnedMessageId Int?
 
   @@unique([denId, slug])
 }
@@ -74,7 +184,8 @@ model Post {
   title     String
   content   String
   imageUrl  String?
-  tags      String    @default("Discussion") // Comma-separated list of tags
+  tags      String    @default("Discussion")
+  hasPoll   Boolean   @default(false)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   authorId  Int
@@ -85,6 +196,30 @@ model Post {
   channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
   comments  Comment[]
   votes     Vote[]
+  poll      Poll?
+  saves     SavedPost[]
+  reports   PostReport[]
+}
+
+model Poll {
+  id        Int        @id @default(autoincrement())
+  postId    Int        @unique
+  post      Post       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  question  String
+  options   String     // JSON array of option strings
+  createdAt DateTime   @default(now())
+  votes     PollVote[]
+}
+
+model PollVote {
+  id          Int      @id @default(autoincrement())
+  pollId      Int
+  poll        Poll     @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  optionIndex Int      // 0-based index of chosen option
+
+  @@unique([pollId, userId])
 }
 
 model Comment {
@@ -102,13 +237,37 @@ model Comment {
 
 model Vote {
   id     Int  @id @default(autoincrement())
-  value  Int  // 1 for upvote, -1 for downvote
+  value  Int
   userId Int
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
   postId Int
   post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@unique([userId, postId])
+}
+
+model MessageReaction {
+  id        Int      @id @default(autoincrement())
+  messageId String   // Supabase message ID (UUID string)
+  channelId Int
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId, emoji])
+}
+
+model PostReport {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId])
 }
 
 model ChannelMember {
@@ -120,4 +279,51 @@ model ChannelMember {
   joinedAt  DateTime @default(now())
 
   @@unique([channelId, userId])
+}
+
+model DenInvite {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  denId     Int
+  den       Den      @relation(fields: [denId], references: [id], onDelete: Cascade)
+  createdBy Int
+  uses      Int      @default(0)
+  maxUses   Int?     @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // "mention" | "reply" | "vote" | "follow" | "badge"
+  message   String
+  link      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model WatchPartyRoom {
+  id          Int                @id @default(autoincrement())
+  roomCode    String             @unique // Short shareable code e.g. "abc123"
+  denId       Int
+  den         Den                @relation(fields: [denId], references: [id], onDelete: Cascade)
+  hostId      Int
+  videoUrl    String             @default("")
+  videoTitle  String             @default("")
+  isPlaying   Boolean            @default(false)
+  currentTime Float              @default(0)
+  createdAt   DateTime           @default(now())
+  members     WatchPartyMember[]
+}
+
+model WatchPartyMember {
+  id        Int            @id @default(autoincrement())
+  roomId    Int
+  room      WatchPartyRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId    Int
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime       @default(now())
+
+  @@unique([roomId, userId])
 }
