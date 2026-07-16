@@ -1,21 +1,29 @@
+import "dotenv/config";
+import { Pool } from "pg";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
 
-let prismaInstance: PrismaClient;
+// Helper to get clean connection string without query params that overwrite pg SSL settings
+const getCleanUrl = (url?: string) => {
+  if (!url) return undefined;
+  return url.split("?")[0];
+};
 
-const databaseUrl = process.env.DATABASE_URL || "file:./dev.db";
+const createPrismaClient = () => {
+  const connectionString = process.env.DATABASE_URL;
+  const pool = new Pool({
+    connectionString: getCleanUrl(connectionString),
+    ssl: { rejectUnauthorized: false },
+  });
+  const adapter = new PrismaPg(pool);
+  return new PrismaClient({ adapter });
+};
 
-if (process.env.NODE_ENV === "production") {
-  const adapter = new PrismaBetterSqlite3({ url: databaseUrl });
-  prismaInstance = new PrismaClient({ adapter });
-} else {
-  if (!globalForPrisma.prisma) {
-    const adapter = new PrismaBetterSqlite3({ url: databaseUrl });
-    globalForPrisma.prisma = new PrismaClient({ adapter });
-  }
-  prismaInstance = globalForPrisma.prisma;
+// Always export a valid client instance
+export const prisma = globalForPrisma.prisma || createPrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
 }
-
-export const prisma = prismaInstance;
