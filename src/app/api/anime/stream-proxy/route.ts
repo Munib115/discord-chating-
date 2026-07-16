@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const contentType = response.headers["content-type"] || "";
+    const contentType = String(response.headers["content-type"] || "");
 
     // If it's an HLS playlist (.m3u8), we parse and rewrite the segment/key URLs
     if (
