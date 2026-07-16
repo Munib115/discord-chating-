@@ -75,11 +75,18 @@ export default async function ChannelPage({ params }: PageProps) {
 
   if (currentUser && !isMember) {
     try {
-      await prisma.denMember.create({
-        data: {
+      await prisma.denMember.upsert({
+        where: {
+          denId_userId: {
+            denId: den.id,
+            userId: currentUser.id,
+          },
+        },
+        create: {
           denId: den.id,
           userId: currentUser.id,
         },
+        update: {},
       });
       isMember = true;
     } catch (err) {
@@ -108,11 +115,18 @@ export default async function ChannelPage({ params }: PageProps) {
 
   if (currentUser && !isChannelMember && isGeneralChannel) {
     try {
-      await prisma.channelMember.create({
-        data: {
+      await prisma.channelMember.upsert({
+        where: {
+          channelId_userId: {
+            channelId: channel.id,
+            userId: currentUser.id,
+          },
+        },
+        create: {
           channelId: channel.id,
           userId: currentUser.id,
         },
+        update: {},
       });
       channelMembers.push({
         userId: currentUser.id,
